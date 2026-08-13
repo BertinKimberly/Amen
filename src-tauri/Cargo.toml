@@ -1,0 +1,47 @@
+[package]
+name = "local-media-studio"
+version = "0.1.0"
+description = "Local Media Studio — local media downloader powered by yt-dlp + FFmpeg"
+authors = ["Local Media Studio"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "local_media_studio_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-clipboard-manager = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+dirs = "5"
+uuid = { version = "1", features = ["v4"] }
+regex = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+ureq = { version = "2", features = ["tls", "json"] }
+windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem"] }
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
+
+# Dev builds: keep debug info only for our own crate. The `windows` and other
+# huge dependency crates overflow rustc's stack on Windows when compiled with
+# debug info on low-memory machines; disable it for dependencies.
+[profile.dev]
+debug = 1
+
+[profile.dev.package."*"]
+debug = false

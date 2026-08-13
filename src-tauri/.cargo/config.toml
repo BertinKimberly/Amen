@@ -1,0 +1,5 @@
+# This machine has 8 GB of RAM — parallel rustc processes can exhaust memory
+# while compiling the large Tauri dependency tree. Cap the job count here so
+# builds are reliable on low-memory machines. Remove/raise on beefier hardware.
+[build]
+jobs = 1
