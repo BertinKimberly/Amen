@@ -261,7 +261,15 @@ fn parse_result(v: &Value) -> AnalyzeResult {
     if let Some(entries) = v.get("entries").and_then(|x| x.as_array()) {
         let mut parsed = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        for e in entries {
+        
+        // Detect if this is a search result
+        let extractor = opt_str(v, &["extractor"]).unwrap_or_default();
+        let is_search = extractor.contains("search") || extractor.starts_with("ytsearch");
+        
+        // For search results, strictly limit to 5 entries
+        let max_entries = if is_search { 5 } else { entries.len() };
+        
+        for e in entries.iter().take(max_entries) {
             let p = parse_entry(e);
             if let Some(id) = &p.id {
                 if !seen.insert(id.clone()) {
@@ -269,7 +277,13 @@ fn parse_result(v: &Value) -> AnalyzeResult {
                 }
             }
             parsed.push(p);
+            
+            // Hard stop at 5 for search results
+            if is_search && parsed.len() >= 5 {
+                break;
+            }
         }
+        
         // Some extractors return a single "url" wrapper with one entry that is
         // effectively the media itself (e.g. some non-YouTube extractors).
         let top_title = opt_str(v, &["title"]);
@@ -279,7 +293,8 @@ fn parse_result(v: &Value) -> AnalyzeResult {
                 return AnalyzeResult::Media(parsed[0].clone());
             }
         }
-        let count = opt_i64(v, &["playlist_count"]).or_else(|| Some(parsed.len() as i64));
+        
+        let count = Some(parsed.len() as i64);
         return AnalyzeResult::Playlist(PlaylistInfo {
             id: opt_str(v, &["id", "playlist_id"]),
             title: opt_str(v, &["playlist_title", "title"]),
@@ -312,18 +327,28 @@ pub fn analyze_url(url: &str, flat: bool) -> AppResult<AnalyzeResult> {
     
     let is_url = url.starts_with("http://") || url.starts_with("https://");
     let target = if is_url {
+        // For exact URLs, use --no-playlist to get single media
         url.to_string()
     } else {
+        // For search queries, limit to 5 results maximum
         format!("ytsearch5:{}", url)
     };
 
-    let args = vec![
-        "--flat-playlist".to_string(),
+    let mut args = vec![
         "--dump-single-json".to_string(),
         "--no-warnings".to_string(),
         "--quiet".to_string(),
-        target,
     ];
+    
+    if is_url {
+        // For exact URLs: disable playlist extraction, get single video
+        args.push("--no-playlist".to_string());
+    } else {
+        // For searches: use flat-playlist to avoid downloading full metadata
+        args.push("--flat-playlist".to_string());
+    }
+    
+    args.push(target);
 
     let mut cmd = new_command(&ytdlp);
     cmd.args(&args);

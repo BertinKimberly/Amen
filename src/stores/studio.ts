@@ -21,6 +21,8 @@ export interface PlaybackState {
    volume: number; // 0..1
    muted: boolean;
    playbackRate: number; // 0.25..2.0
+   mode: "source" | "timeline"; // source = play individual source, timeline = play rendered mix
+   sourcePlaybackPath: string | null; // path to source being played
 }
 
 export interface SelectionState {
@@ -171,6 +173,8 @@ export const useStudioStore = create<StudioStore>()(
          volume: 0.8,
          muted: false,
          playbackRate: 1.0,
+         mode: "source",
+         sourcePlaybackPath: null,
       },
       selection: {
          selectedSourceId: null,
@@ -208,6 +212,8 @@ export const useStudioStore = create<StudioStore>()(
                volume: 0.8,
                muted: false,
                playbackRate: 1.0,
+               mode: "source",
+               sourcePlaybackPath: null,
             };
             state.waveformCache = {};
             state.loadingState = "idle";
@@ -344,10 +350,19 @@ export const useStudioStore = create<StudioStore>()(
       },
 
       selectSource: async (id: string) => {
+         const state = get();
+         const src = state.project?.sources.find((s) => s.id === id);
          set((state: StudioStore) => {
             state.selection.selectedSourceId = id;
             state.selection.selectionStart = null;
             state.selection.selectionEnd = null;
+            // Switch to source playback mode and set source path
+            if (src) {
+               state.playback.mode = "source";
+               state.playback.sourcePlaybackPath = src.path;
+               state.playback.playhead = 0;
+               state.playback.playing = false;
+            }
          });
          await get().getSourceWaveform(id);
       },
@@ -646,11 +661,13 @@ export const useStudioStore = create<StudioStore>()(
          try {
             set((s: StudioStore) => {
                s.playback.previewStale = true;
+               s.playback.mode = "timeline"; // Switch to timeline mode for preview
             });
             const result = await studioApi.renderPreview(state.project);
             set((s: StudioStore) => {
                s.playback.previewPath = assetUrl(result.path);
                s.playback.previewStale = false;
+               s.playback.playhead = 0; // Reset playhead
             });
          } catch (e) {
             console.error("Preview render failed:", e);

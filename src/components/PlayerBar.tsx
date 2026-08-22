@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { Play, Pause, SkipBack, Volume2, VolumeX, Zap } from "lucide-react";
 import { formatTime, clamp } from "../lib/studioTime";
+import { assetUrl } from "../lib/api";
 
 interface PlayerBarProps {
    playing: boolean;
@@ -17,6 +18,8 @@ interface PlayerBarProps {
    onMuteToggle?: () => void;
    onPlaybackRateChange?: (r: number) => void;
    previewPath?: string | null;
+   mode?: "source" | "timeline";
+   sourcePlaybackPath?: string | null;
 }
 
 /**
@@ -42,9 +45,16 @@ export function PlayerBar({
    onMuteToggle,
    onPlaybackRateChange,
    previewPath,
+   mode = "timeline",
+   sourcePlaybackPath,
 }: PlayerBarProps) {
    const audioRef = useRef<HTMLAudioElement>(null);
    const frameRef = useRef<number>();
+
+   // Determine which audio source to play
+   const audioSrc = mode === "source" && sourcePlaybackPath
+      ? assetUrl(sourcePlaybackPath)
+      : previewPath;
 
    useEffect(() => {
       const audio = audioRef.current;
@@ -55,7 +65,7 @@ export function PlayerBar({
       } else {
          audio.pause();
       }
-   }, [playing, previewPath]);
+   }, [playing, audioSrc]);
 
    useEffect(() => {
       const audio = audioRef.current;
@@ -223,7 +233,7 @@ export function PlayerBar({
          {/* Hidden audio element for playback */}
          <audio 
             ref={audioRef} 
-            src={previewPath || undefined} 
+            src={audioSrc || undefined} 
             onEnded={() => onStop?.()}
          />
       </div>

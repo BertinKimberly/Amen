@@ -42,6 +42,10 @@ export function PlaylistPreview({
       () => new Set(entries.filter((e) => e.id).map((e) => e.id as string)),
    );
    const [showAll, setShowAll] = useState(false);
+   
+   // For search results, show 5 by default, for playlists show 30
+   const isSearch = playlist.extractor?.toLowerCase().includes("search") ?? false;
+   const defaultVisible = isSearch ? 5 : 30;
 
    const toggle = (id: string) => {
       setSelected((prev) => {
@@ -63,7 +67,7 @@ export function PlaylistPreview({
       [entries, selected],
    );
 
-   const visible = showAll ? entries : entries.slice(0, 30);
+   const visible = showAll ? entries : entries.slice(0, defaultVisible);
 
    return (
       <div className="animate-slide-up overflow-hidden rounded-2xl border border-border bg-card shadow-sm">
@@ -145,7 +149,7 @@ export function PlaylistPreview({
                   </button>
                );
             })}
-            {entries.length > 30 && (
+            {entries.length > defaultVisible && (
                <button
                   onClick={() => setShowAll((v) => !v)}
                   className="w-full py-2 text-center text-xs font-medium text-primary hover:underline"

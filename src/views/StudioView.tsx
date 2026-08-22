@@ -8,6 +8,7 @@ import { ClipLibrary } from "../components/ClipLibrary";
 import { ExportDialog } from "../components/ExportDialog";
 import { Plus, Save, RotateCcw, RotateCw, Download } from "lucide-react";
 import { save, open } from "@tauri-apps/plugin-dialog";
+import { formatTime } from "../lib/studioTime";
 
 export function StudioView() {
    const store = useStudioStore();
@@ -15,54 +16,7 @@ export function StudioView() {
    const [exporting, setExporting] = useState(false);
    const [dragActive, setDragActive] = useState(false);
 
-   // Initialize with a new project if none exists
-   useEffect(() => {
-      if (!store.project) {
-         store.newProject("Untitled Mix");
-      }
-   }, [store.project]);
-
-   // Auto-render preview when modified
-   useEffect(() => {
-      if (store.modified && store.project?.timeline.tracks.some(t => t.items.length > 0)) {
-         const t = setTimeout(() => {
-            store.renderPreview();
-         }, 1000);
-         return () => clearTimeout(t);
-      }
-   }, [store.modified, store.project]);
-
-   // Drag and drop handlers
-   const handleDrag = (e: React.DragEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-      if (e.type === "dragenter" || e.type === "dragover") {
-         setDragActive(true);
-      } else if (e.type === "dragleave") {
-         setDragActive(false);
-      }
-   };
-
-   const handleDrop = async (e: React.DragEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-      setDragActive(false);
-
-      if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-         const files = Array.from(e.dataTransfer.files);
-         for (const file of files) {
-            const path = (file as any).path; // Electron/Tauri provides path
-            if (path && /\.(mp3|wav|flac|m4a|aac|ogg)$/i.test(path)) {
-               try {
-                  await store.addSource(path);
-               } catch (e) {
-                  console.error("Failed to import:", e);
-               }
-            }
-         }
-      }
-   };
-
+   // Declare handlers first
    const handleNewProject = async () => {
       if (store.modified && !confirm("Discard unsaved changes?")) return;
       await store.newProject("Untitled Mix");
@@ -108,23 +62,174 @@ export function StudioView() {
    const handleExportMix = async (format: string, bitrate: number) => {
       try {
          setExporting(true);
+         const defaultExt = format.toLowerCase();
          const path = await save({
-            defaultPath: `mix.${format}`,
-            filters: [{ name: format.toUpperCase(), extensions: [format] }],
+            defaultPath: `${store.project?.name || "mix"}.${defaultExt}`,
+            filters: [{ name: format.toUpperCase(), extensions: [defaultExt] }],
          });
          if (path) {
             const result = await store.exportMix(path, format, bitrate);
             if (result) {
-               alert(`Exported to ${result.path}`);
+               setShowExportDialog(false);
+               // Show success with options to open
+               if (confirm(`Export complete!\n\nFile: ${result.path}\nSize: ${(result.sizeBytes / 1024 / 1024).toFixed(2)} MB\nDuration: ${result.duration.toFixed(1)}s\n\nOpen the file now?`)) {
+                  try {
+                     const { openPath } = await import("@tauri-apps/plugin-opener");
+                     await openPath(result.path);
+                  } catch (e) {
+                     console.error("Failed to open file:", e);
+                  }
+               }
+            } else {
+               alert("Export failed. Check the timeline and try again.");
             }
          }
-      } catch (e) {
+      } catch (e: any) {
          console.error("Export failed:", e);
-         alert("Export failed");
+         alert(`Export failed: ${e?.message || e}`);
       } finally {
          setExporting(false);
       }
    };
+
+   // Drag and drop handlers
+   const handleDrag = (e: React.DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.type === "dragenter" || e.type === "dragover") {
+         setDragActive(true);
+      } else if (e.type === "dragleave") {
+         setDragActive(false);
+      }
+   };
+
+   const handleDrop = async (e: React.DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setDragActive(false);
+
+      if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+         const files = Array.from(e.dataTransfer.files);
+         for (const file of files) {
+            const path = (file as any).path; // Electron/Tauri provides path
+            if (path && /\.(mp3|wav|flac|m4a|aac|ogg)$/i.test(path)) {
+               try {
+                  await store.addSource(path);
+               } catch (e) {
+                  console.error("Failed to import:", e);
+               }
+            }
+         }
+      }
+   };
+
+   // Initialize with a new project if none exists
+   useEffect(() => {
+      if (!store.project) {
+         store.newProject("Untitled Mix");
+      }
+   }, [store.project]);
+
+   // Keyboard shortcuts for Studio
+   useEffect(() => {
+      const handleKeyDown = (e: KeyboardEvent) => {
+         // Skip if user is typing in an input
+         if (
+            e.target instanceof HTMLInputElement ||
+            e.target instanceof HTMLTextAreaElement ||
+            e.target instanceof HTMLSelectElement
+         ) {
+            return;
+         }
+
+         // Delete: remove selected clip or timeline item
+         if (e.key === "Delete" || e.key === "Backspace") {
+            e.preventDefault();
+            if (store.selection.selectedClipId) {
+               if (confirm("Delete this clip?")) {
+                  store.deleteClip(store.selection.selectedClipId);
+               }
+            }
+         }
+         
+         // Ctrl/Cmd + Z: Undo
+         if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey) {
+            e.preventDefault();
+            if (store.canUndo()) {
+               store.undo();
+            }
+         }
+         
+         // Ctrl/Cmd + Shift + Z or Ctrl/Cmd + Y: Redo
+         if (
+            ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === "z") ||
+            ((e.ctrlKey || e.metaKey) && e.key === "y")
+         ) {
+            e.preventDefault();
+            if (store.canRedo()) {
+               store.redo();
+            }
+         }
+         
+         // Ctrl/Cmd + S: Save project
+         if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+            e.preventDefault();
+            if (store.savedPath) {
+               handleSaveProject();
+            } else {
+               handleSaveProjectAs();
+            }
+         }
+         
+         // Ctrl/Cmd + E: Export
+         if ((e.ctrlKey || e.metaKey) && e.key === "e") {
+            e.preventDefault();
+            setShowExportDialog(true);
+         }
+         
+         // Ctrl/Cmd + N: New project
+         if ((e.ctrlKey || e.metaKey) && e.key === "n") {
+            e.preventDefault();
+            handleNewProject();
+         }
+         
+         // Ctrl/Cmd + O: Open project
+         if ((e.ctrlKey || e.metaKey) && e.key === "o") {
+            e.preventDefault();
+            handleOpenProject();
+         }
+         
+         // Ctrl/Cmd + D: Duplicate selected clip
+         if ((e.ctrlKey || e.metaKey) && e.key === "d") {
+            e.preventDefault();
+            if (store.selection.selectedClipId) {
+               store.duplicateClip(store.selection.selectedClipId);
+            }
+         }
+      };
+
+      window.addEventListener("keydown", handleKeyDown);
+      return () => window.removeEventListener("keydown", handleKeyDown);
+   }, [
+      store,
+      handleSaveProject,
+      handleSaveProjectAs,
+      handleNewProject,
+      handleOpenProject,
+   ]);
+
+   // Auto-render preview when timeline is modified
+   useEffect(() => {
+      const hasTimelineContent = store.project?.timeline.tracks.some(t => t.items.length > 0);
+      if (store.modified && hasTimelineContent) {
+         const t = setTimeout(() => {
+            store.renderPreview().catch(err => {
+               console.error("Auto-preview failed:", err);
+            });
+         }, 1500); // Debounce 1.5s to avoid excessive renders
+         return () => clearTimeout(t);
+      }
+   }, [store.modified, store.project?.timeline]);
 
    if (!store.project) {
       return <div className="p-8 text-center">Loading studio...</div>;
@@ -207,6 +312,11 @@ export function StudioView() {
       0,
    );
 
+   // Calculate duration based on playback mode
+   const effectiveDuration = store.playback.mode === "source" && store.selection.selectedSourceId
+      ? (store.project.sources.find(s => s.id === store.selection.selectedSourceId)?.duration || projectDuration)
+      : projectDuration;
+
    return (
       <div 
          className="flex flex-col h-full gap-4 p-4 bg-slate-950 text-slate-100 overflow-hidden"
@@ -237,7 +347,7 @@ export function StudioView() {
                <button
                   onClick={handleNewProject}
                   className="flex items-center gap-2 rounded bg-slate-700 px-3 py-2 hover:bg-slate-600 transition"
-                  title="New project"
+                  title="New project (Ctrl+N)"
                >
                   <Plus size={16} />
                   New
@@ -245,7 +355,7 @@ export function StudioView() {
                <button
                   onClick={handleOpenProject}
                   className="flex items-center gap-2 rounded bg-slate-700 px-3 py-2 hover:bg-slate-600 transition"
-                  title="Open project"
+                  title="Open project (Ctrl+O)"
                >
                   <Download size={16} />
                   Open
@@ -254,7 +364,7 @@ export function StudioView() {
                   onClick={handleSaveProject}
                   className="flex items-center gap-2 rounded bg-blue-600 px-3 py-2 hover:bg-blue-700 transition disabled:opacity-50"
                   disabled={store.loadingState === "saving"}
-                  title="Save project"
+                  title="Save project (Ctrl+S)"
                >
                   <Save size={16} />
                   Save
@@ -262,7 +372,7 @@ export function StudioView() {
                <button
                   onClick={handleSaveProjectAs}
                   className="flex items-center gap-2 rounded bg-slate-700 px-3 py-2 hover:bg-slate-600 transition"
-                  title="Save project as..."
+                  title="Save project as... (Ctrl+Shift+S)"
                >
                   Save As...
                </button>
@@ -273,7 +383,7 @@ export function StudioView() {
                   onClick={() => store.undo()}
                   disabled={!store.canUndo()}
                   className="rounded bg-slate-700 px-3 py-2 hover:bg-slate-600 disabled:opacity-50 transition"
-                  title="Undo"
+                  title="Undo (Ctrl+Z)"
                >
                   <RotateCcw size={16} />
                </button>
@@ -281,7 +391,7 @@ export function StudioView() {
                   onClick={() => store.redo()}
                   disabled={!store.canRedo()}
                   className="rounded bg-slate-700 px-3 py-2 hover:bg-slate-600 disabled:opacity-50 transition"
-                  title="Redo"
+                  title="Redo (Ctrl+Shift+Z)"
                >
                   <RotateCw size={16} />
                </button>
@@ -292,7 +402,7 @@ export function StudioView() {
                   onClick={() => setShowExportDialog(true)}
                   className="flex items-center gap-2 rounded bg-green-600 px-3 py-2 hover:bg-green-700 transition disabled:opacity-50"
                   disabled={exporting}
-                  title="Export mix"
+                  title="Export mix (Ctrl+E)"
                >
                   Export
                </button>
@@ -329,36 +439,108 @@ export function StudioView() {
             <div className="flex-1 flex flex-col gap-4 min-w-0 overflow-hidden">
                {/* Waveform */}
                {store.selection.selectedSourceWaveform && (
-                  <WaveformView
-                     waveform={store.selection.selectedSourceWaveform}
-                     duration={store.selection.selectedSourceWaveform.duration}
-                     onSelectionChange={(start, end) => {
-                        store.setSelectionStart(start);
-                        store.setSelectionEnd(end);
-                     }}
-                     onSeek={(time) => store.seek(time)}
-                     playhead={store.playback.playhead}
-                     darkMode
-                  />
+                  <div className="space-y-2">
+                     <WaveformView
+                        waveform={store.selection.selectedSourceWaveform}
+                        duration={store.selection.selectedSourceWaveform.duration}
+                        onSelectionChange={(start, end) => {
+                           store.setSelectionStart(start);
+                           store.setSelectionEnd(end);
+                        }}
+                        onSeek={(time) => store.seek(time)}
+                        playhead={store.playback.playhead}
+                        darkMode
+                     />
+                     
+                     {/* Selection controls */}
+                     {store.selection.selectionStart !== null && store.selection.selectionEnd !== null && (
+                        <div className="flex items-center gap-4 bg-slate-900 p-3 rounded-lg">
+                           <div className="flex-1 flex gap-4 text-sm">
+                              <div>
+                                 <span className="text-slate-400">Start:</span>{" "}
+                                 <span className="font-mono">{formatTime(store.selection.selectionStart)}</span>
+                              </div>
+                              <div>
+                                 <span className="text-slate-400">End:</span>{" "}
+                                 <span className="font-mono">{formatTime(store.selection.selectionEnd)}</span>
+                              </div>
+                              <div>
+                                 <span className="text-slate-400">Duration:</span>{" "}
+                                 <span className="font-mono">{formatTime(store.selection.selectionEnd - store.selection.selectionStart)}</span>
+                              </div>
+                           </div>
+                           <button
+                              onClick={() => store.createClipFromSelection()}
+                              className="flex items-center gap-2 bg-green-600 hover:bg-green-700 px-4 py-2 rounded-lg font-medium transition"
+                           >
+                              <Plus size={18} />
+                              Create Clip
+                           </button>
+                        </div>
+                     )}
+                  </div>
                )}
 
                {/* Player bar */}
-               <PlayerBar
-                  playing={store.playback.playing}
-                  playhead={store.playback.playhead}
-                  duration={projectDuration || 30}
-                  volume={store.playback.volume}
-                  muted={store.playback.muted}
-                  playbackRate={store.playback.playbackRate}
-                  onPlay={() => store.play()}
-                  onPause={() => store.pause()}
-                  onStop={() => store.stop()}
-                  onSeek={(t) => store.seek(t)}
-                  onVolumeChange={(v) => store.setVolume(v)}
-                  onMuteToggle={() => store.setMuted(!store.playback.muted)}
-                  onPlaybackRateChange={(r) => store.setPlaybackRate(r)}
-                  previewPath={store.playback.previewPath}
-               />
+               <div className="space-y-2">
+                  {/* Mode selector */}
+                  <div className="flex items-center gap-2 text-sm">
+                     <span className="text-slate-400">Playback:</span>
+                     <button
+                        onClick={() => {
+                           if (store.selection.selectedSourceId) {
+                              store.selectSource(store.selection.selectedSourceId);
+                           }
+                        }}
+                        className={`px-3 py-1 rounded transition ${
+                           store.playback.mode === "source"
+                              ? "bg-blue-600 text-white"
+                              : "bg-slate-700 text-slate-300 hover:bg-slate-600"
+                        }`}
+                        disabled={!store.selection.selectedSourceId}
+                     >
+                        Source
+                     </button>
+                     <button
+                        onClick={async () => {
+                           const hasTimelineContent = store.project?.timeline.tracks.some(t => t.items.length > 0);
+                           if (hasTimelineContent) {
+                              await store.renderPreview();
+                           }
+                        }}
+                        className={`px-3 py-1 rounded transition ${
+                           store.playback.mode === "timeline"
+                              ? "bg-blue-600 text-white"
+                              : "bg-slate-700 text-slate-300 hover:bg-slate-600"
+                        }`}
+                        disabled={!store.project?.timeline.tracks.some(t => t.items.length > 0)}
+                     >
+                        Timeline Mix
+                        {store.playback.previewStale && store.playback.mode === "timeline" && (
+                           <span className="ml-1 text-yellow-400">*</span>
+                        )}
+                     </button>
+                  </div>
+                  
+                  <PlayerBar
+                     playing={store.playback.playing}
+                     playhead={store.playback.playhead}
+                     duration={effectiveDuration || 30}
+                     volume={store.playback.volume}
+                     muted={store.playback.muted}
+                     playbackRate={store.playback.playbackRate}
+                     onPlay={() => store.play()}
+                     onPause={() => store.pause()}
+                     onStop={() => store.stop()}
+                     onSeek={(t) => store.seek(t)}
+                     onVolumeChange={(v) => store.setVolume(v)}
+                     onMuteToggle={() => store.setMuted(!store.playback.muted)}
+                     onPlaybackRateChange={(r) => store.setPlaybackRate(r)}
+                     previewPath={store.playback.previewPath}
+                     mode={store.playback.mode}
+                     sourcePlaybackPath={store.playback.sourcePlaybackPath}
+                  />
+               </div>
 
                {/* Timeline */}
                <div className="flex-1 min-h-0 overflow-hidden">
@@ -367,14 +549,8 @@ export function StudioView() {
                      clips={store.project.clips}
                      duration={projectDuration || 30}
                      selectedTrackId={store.selection.selectedTrackId}
-                     onAddClipToTrack={(trackId, pos) => {
-                        if (store.selection.selectedClipId) {
-                           store.addItemToTimeline(
-                              store.selection.selectedClipId,
-                              trackId,
-                              pos,
-                           );
-                        }
+                     onAddClipToTrack={(trackId, clipId, pos) => {
+                        store.addItemToTimeline(clipId, trackId, pos);
                      }}
                      onMoveItem={(trackId, idx, newPos) =>
                         store.moveItem(trackId, idx, newPos)
@@ -385,6 +561,11 @@ export function StudioView() {
                      onSelectItem={(trackId, _idx) => store.setSelectedTrack(trackId)}
                      onSelectTrack={(trackId) =>
                         store.setSelectedTrack(trackId)
+                     }
+                     onAddTrack={() => store.addTrack()}
+                     onRemoveTrack={(id) => store.removeTrack(id)}
+                     onUpdateItem={(trackId, idx, updates) =>
+                        store.updateItem(trackId, idx, updates)
                      }
                      playhead={store.playback.playhead}
                   />

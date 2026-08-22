@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { Trash2 } from "lucide-react";
+import { Trash2, Plus } from "lucide-react";
 import type { StudioTrack, StudioTimelineItem, StudioClip } from "../lib/studioTypes";
 
 interface TimelineProps {
@@ -9,11 +9,14 @@ interface TimelineProps {
    selectedTrackId?: string | null;
    selectedItemTrackId?: string | null;
    selectedItemIndex?: number | null;
-   onAddClipToTrack?: (trackId: string, position: number) => void;
+   onAddClipToTrack?: (trackId: string, clipId: string, position: number) => void;
    onMoveItem?: (trackId: string, index: number, newPosition: number) => void;
    onRemoveItem?: (trackId: string, index: number) => void;
    onSelectItem?: (trackId: string, index: number) => void;
    onSelectTrack?: (trackId: string) => void;
+   onAddTrack?: () => void;
+   onRemoveTrack?: (trackId: string) => void;
+   onUpdateItem?: (trackId: string, index: number, updates: Partial<StudioTimelineItem>) => void;
    playhead?: number;
 }
 
@@ -38,6 +41,7 @@ export function Timeline({
    onRemoveItem,
    onSelectItem,
    onSelectTrack,
+   onAddTrack,
    clips,
    playhead = 0,
 }: TimelineProps) {
@@ -49,21 +53,43 @@ export function Timeline({
       startX: number;
       startPos: number;
    } | null>(null);
+   const [dropTarget, setDropTarget] = useState<{ trackId: string; position: number } | null>(null);
 
    const pxPerSecond = 100; // pixels per second
    const trackHeight = 80;
    const totalWidth = Math.max(duration * pxPerSecond, 800);
+
+   const handleTrackDragOver = (e: React.DragEvent<HTMLDivElement>, trackId: string) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+      const rect = e.currentTarget.getBoundingClientRect();
+      const relX = e.clientX - rect.left;
+      const position = Math.max(0, relX / pxPerSecond);
+      setDropTarget({ trackId, position });
+   };
+
+   const handleTrackDrop = (e: React.DragEvent<HTMLDivElement>, trackId: string) => {
+      e.preventDefault();
+      const clipId = e.dataTransfer.getData("application/amen-clip");
+      if (clipId) {
+         const rect = e.currentTarget.getBoundingClientRect();
+         const relX = e.clientX - rect.left;
+         const position = Math.max(0, relX / pxPerSecond);
+         onAddClipToTrack?.(trackId, clipId, position);
+      }
+      setDropTarget(null);
+   };
+
+   const handleTrackDragLeave = () => {
+      setDropTarget(null);
+   };
 
    const handleTrackClick = (
       e: React.MouseEvent<HTMLDivElement>,
       trackId: string,
    ) => {
       if (e.target !== e.currentTarget) return; // only on empty track area
-      const rect = e.currentTarget.getBoundingClientRect();
-      const relX = e.clientX - rect.left;
-      const position = relX / pxPerSecond;
       onSelectTrack?.(trackId);
-      onAddClipToTrack?.(trackId, position);
    };
 
    const handleMouseDownOnItem = (
@@ -101,10 +127,23 @@ export function Timeline({
    };
 
    return (
-      <div
-         className="relative overflow-x-auto overflow-y-hidden rounded-lg bg-slate-950 border border-slate-700"
-         style={{ height: tracks.length * trackHeight + 40 }}
-      >
+      <div className="flex flex-col gap-2">
+         <div className="flex items-center justify-between px-2">
+            <h3 className="font-semibold text-sm">Timeline</h3>
+            <button
+               onClick={onAddTrack}
+               className="rounded bg-blue-600 p-1 hover:bg-blue-700 transition text-xs flex items-center gap-1 px-2"
+               title="Add track"
+            >
+               <Plus size={14} />
+               Add Track
+            </button>
+         </div>
+         
+         <div
+            className="relative overflow-x-auto overflow-y-auto rounded-lg bg-slate-950 border border-slate-700"
+            style={{ height: Math.max(tracks.length * trackHeight + 40, 200) }}
+         >
          {/* Ruler at top */}
          <div className="sticky top-0 z-10 h-10 bg-slate-900 border-b border-slate-700 flex">
             {Array.from({ length: Math.ceil(duration) + 1 }).map((_, i) => (
@@ -139,25 +178,46 @@ export function Timeline({
             )}
 
             {/* Tracks */}
-            {tracks.map((track, trackIdx) => (
-               <div
-                  key={track.id}
-                  onClick={(e) => handleTrackClick(e, track.id)}
-                  style={{
-                     top: trackIdx * trackHeight,
-                     height: trackHeight,
-                     minWidth: totalWidth,
-                  }}
-                  className={`absolute left-0 right-0 border-b border-slate-700 cursor-pointer transition ${
-                     selectedTrackId === track.id
-                        ? "bg-blue-950"
-                        : "bg-slate-900 hover:bg-slate-800"
-                  }`}
-               >
-                  {/* Track label */}
-                  <div className="absolute left-2 top-1 text-xs text-slate-500 select-none pointer-events-none">
-                     Track {trackIdx + 1}
-                  </div>
+            {tracks.length === 0 ? (
+               <div className="absolute inset-0 flex items-center justify-center text-slate-500 text-sm">
+                  Add a track to start arranging clips
+               </div>
+            ) : (
+               tracks.map((track, trackIdx) => (
+                  <div
+                     key={track.id}
+                     onClick={(e) => handleTrackClick(e, track.id)}
+                     onDragOver={(e) => handleTrackDragOver(e, track.id)}
+                     onDrop={(e) => handleTrackDrop(e, track.id)}
+                     onDragLeave={handleTrackDragLeave}
+                     style={{
+                        top: trackIdx * trackHeight,
+                        height: trackHeight,
+                        minWidth: totalWidth,
+                     }}
+                     className={`absolute left-0 right-0 border-b border-slate-700 cursor-pointer transition ${
+                        dropTarget?.trackId === track.id
+                           ? "bg-blue-900 border-blue-500"
+                           : selectedTrackId === track.id
+                           ? "bg-blue-950"
+                           : "bg-slate-900 hover:bg-slate-800"
+                     }`}
+                  >
+                     {/* Track label */}
+                     <div className="absolute left-2 top-1 text-xs text-slate-500 select-none pointer-events-none flex items-center gap-2">
+                        <span>Track {trackIdx + 1}</span>
+                        {track.items.length === 0 && (
+                           <span className="text-slate-600 italic">Drop clips here</span>
+                        )}
+                     </div>
+
+                     {/* Drop indicator */}
+                     {dropTarget?.trackId === track.id && (
+                        <div
+                           style={{ left: dropTarget.position * pxPerSecond }}
+                           className="absolute top-0 bottom-0 w-0.5 bg-green-400 pointer-events-none z-30"
+                        />
+                     )}
 
                   {/* Track items */}
                   {track.items.map((item, itemIdx) => {
@@ -209,9 +269,10 @@ export function Timeline({
                      );
                   })}
                </div>
-            ))}
+            )))}
          </div>
       </div>
+   </div>
    );
 }
 

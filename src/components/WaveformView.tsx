@@ -22,7 +22,6 @@ interface WaveformViewProps {
  */
 export function WaveformView({
    waveform,
-   duration,
    onSelectionChange,
    onSeek,
    playhead = 0,
@@ -163,16 +162,20 @@ export function WaveformView({
    };
 
    const handleMouseUp = () => {
+      if (isDragging && dragStart !== null) {
+         // Only treat as selection if we dragged more than a small threshold
+         if (selectionStart !== null && selectionEnd !== null) {
+            const delta = Math.abs(selectionEnd - selectionStart);
+            if (delta < 0.1) {
+               // Too small, treat as click
+               onSeek?.(dragStart);
+               setSelectionStart(null);
+               setSelectionEnd(null);
+               onSelectionChange?.(null, null);
+            }
+         }
+      }
       setIsDragging(false);
-   };
-
-   const handleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
-      if (isDragging) return; // was a drag
-      if (!canvasRef.current || !waveform) return;
-      const rect = canvasRef.current.getBoundingClientRect();
-      const px = e.clientX - rect.left;
-      const timeAtClick = panX + px / (baseZoom * zoom);
-      onSeek?.(Math.max(0, Math.min(duration, timeAtClick)));
    };
 
    return (
@@ -187,7 +190,6 @@ export function WaveformView({
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
             onMouseLeave={handleMouseUp}
-            onClick={handleClick}
          />
          <div className="text-xs text-slate-400">
             {selectionStart !== null && selectionEnd !== null

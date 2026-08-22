@@ -1,4 +1,4 @@
-import { Plus, Trash2, Copy, Edit2 } from "lucide-react";
+import { Plus, Trash2, Copy, Edit2, GripVertical } from "lucide-react";
 import type { StudioClip, StudioSource } from "../lib/studioTypes";
 import { formatTime } from "../lib/studioTime";
 
@@ -11,6 +11,7 @@ interface ClipLibraryProps {
    onRenameClip?: (id: string, name: string) => void;
    onDeleteClip?: (id: string) => void;
    onDuplicateClip?: (id: string) => void;
+   onStartDrag?: (clipId: string) => void;
 }
 
 export function ClipLibrary({
@@ -22,9 +23,16 @@ export function ClipLibrary({
    onRenameClip,
    onDeleteClip,
    onDuplicateClip,
+   onStartDrag,
 }: ClipLibraryProps) {
    const getSourceName = (sourceId: string) => {
       return sources.find((s) => s.id === sourceId)?.name || "Unknown";
+   };
+
+   const handleDragStart = (e: React.DragEvent, clipId: string) => {
+      e.dataTransfer.effectAllowed = "copy";
+      e.dataTransfer.setData("application/amen-clip", clipId);
+      onStartDrag?.(clipId);
    };
 
    return (
@@ -33,28 +41,33 @@ export function ClipLibrary({
             <h3 className="font-semibold text-sm">Clips</h3>
             <button
                onClick={onCreateClipFromSelection}
-               className="rounded bg-green-600 p-1 hover:bg-green-700 transition"
+               className="rounded bg-green-600 p-1 hover:bg-green-700 transition disabled:opacity-50"
                title="Create clip from selection"
             >
                <Plus size={16} />
             </button>
          </div>
 
-         <div className="space-y-1 max-h-48 overflow-y-auto">
+         <div className="space-y-1 max-h-64 overflow-y-auto">
             {clips.length === 0 ? (
-               <div className="text-xs text-slate-400 p-2">No clips yet</div>
+               <div className="text-xs text-slate-400 p-2">
+                  Select a region on the waveform<br/>and create a clip
+               </div>
             ) : (
                clips.map((clip) => (
                   <div
                      key={clip.id}
+                     draggable
+                     onDragStart={(e) => handleDragStart(e, clip.id)}
                      onClick={() => onSelectClip?.(clip.id)}
-                     className={`p-2 rounded cursor-pointer transition group ${
+                     className={`p-2 rounded cursor-move transition group ${
                         selectedClipId === clip.id
                            ? "bg-green-600 text-white"
                            : "bg-slate-800 hover:bg-slate-700 text-slate-200"
                      }`}
                   >
-                     <div className="flex items-start justify-between gap-2">
+                     <div className="flex items-start gap-2">
+                        <GripVertical size={14} className="mt-0.5 flex-shrink-0 text-slate-500" />
                         <div className="flex-1 min-w-0">
                            <div className="font-mono text-xs truncate font-semibold">
                               {clip.name}
@@ -110,6 +123,12 @@ export function ClipLibrary({
                ))
             )}
          </div>
+         
+         {clips.length > 0 && (
+            <div className="text-xs text-slate-500 pt-1 border-t border-slate-700">
+               Drag clips to timeline to arrange
+            </div>
+         )}
       </div>
    );
 }
