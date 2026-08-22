@@ -259,7 +259,17 @@ fn parse_entry(v: &Value) -> MediaInfo {
 fn parse_result(v: &Value) -> AnalyzeResult {
     // A playlist-like result has an "entries" array.
     if let Some(entries) = v.get("entries").and_then(|x| x.as_array()) {
-        let parsed: Vec<MediaInfo> = entries.iter().map(parse_entry).collect();
+        let mut parsed = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for e in entries {
+            let p = parse_entry(e);
+            if let Some(id) = &p.id {
+                if !seen.insert(id.clone()) {
+                    continue;
+                }
+            }
+            parsed.push(p);
+        }
         // Some extractors return a single "url" wrapper with one entry that is
         // effectively the media itself (e.g. some non-YouTube extractors).
         let top_title = opt_str(v, &["title"]);
@@ -299,12 +309,20 @@ pub fn analyze_url(url: &str, flat: bool) -> AppResult<AnalyzeResult> {
     })?;
 
     let _ = flat; // flat-playlist is always requested; `flat` is kept for API clarity
+    
+    let is_url = url.starts_with("http://") || url.starts_with("https://");
+    let target = if is_url {
+        url.to_string()
+    } else {
+        format!("ytsearch5:{}", url)
+    };
+
     let args = vec![
         "--flat-playlist".to_string(),
         "--dump-single-json".to_string(),
         "--no-warnings".to_string(),
         "--quiet".to_string(),
-        url.to_string(),
+        target,
     ];
 
     let mut cmd = new_command(&ytdlp);

@@ -1,0 +1,80 @@
+========================================
+  AMEN - How to Build and Run
+========================================
+
+✓ Rust is now INSTALLED!
+✓ Node.js is INSTALLED!
+✓ Dependencies are INSTALLED!
+
+You're ready to build!
+
+========================================
+  OPTION 1: Run in Development Mode
+========================================
+
+Double-click this file:
+  run-dev.bat
+
+This will:
+  • Start the development server
+  • Launch the Amen app
+  • Enable hot reload
+
+First run: 8-10 minutes
+After that: 30-60 seconds
+
+========================================
+  OPTION 2: Build Production Installer
+========================================
+
+Double-click this file:
+  build-production.bat
+
+This will:
+  • Build the optimized app
+  • Create Windows installer
+
+Takes: 12-15 minutes
+
+Installer will be at:
+  src-tauri\target\release\bundle\nsis\Amen_0.1.0_x64-setup.exe
+
+========================================
+  Quick Commands (PowerShell)
+========================================
+
+Development:
+  .\run-dev.bat
+
+Production:
+  .\build-production.bat
+
+========================================
+  What to Expect
+========================================
+
+The app will:
+1. Compile Rust backend (slow first time)
+2. Build React frontend (fast)
+3. Launch the Amen application
+
+You'll see lots of "Compiling..." messages.
+This is NORMAL. Just wait patiently!
+
+========================================
+  Need Help?
+========================================
+
+If you get errors:
+1. Check that Rust is installed: cargo --version
+2. Restart your terminal
+3. Try running the .bat files again
+
+========================================
+
+Ready? Just double-click:
+  run-dev.bat
+
+And wait 8-10 minutes for the first build!
+
+========================================

@@ -13,6 +13,7 @@ export function StudioView() {
    const store = useStudioStore();
    const [showExportDialog, setShowExportDialog] = useState(false);
    const [exporting, setExporting] = useState(false);
+   const [dragActive, setDragActive] = useState(false);
 
    // Initialize with a new project if none exists
    useEffect(() => {
@@ -20,6 +21,47 @@ export function StudioView() {
          store.newProject("Untitled Mix");
       }
    }, [store.project]);
+
+   // Auto-render preview when modified
+   useEffect(() => {
+      if (store.modified && store.project?.timeline.tracks.some(t => t.items.length > 0)) {
+         const t = setTimeout(() => {
+            store.renderPreview();
+         }, 1000);
+         return () => clearTimeout(t);
+      }
+   }, [store.modified, store.project]);
+
+   // Drag and drop handlers
+   const handleDrag = (e: React.DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.type === "dragenter" || e.type === "dragover") {
+         setDragActive(true);
+      } else if (e.type === "dragleave") {
+         setDragActive(false);
+      }
+   };
+
+   const handleDrop = async (e: React.DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setDragActive(false);
+
+      if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+         const files = Array.from(e.dataTransfer.files);
+         for (const file of files) {
+            const path = (file as any).path; // Electron/Tauri provides path
+            if (path && /\.(mp3|wav|flac|m4a|aac|ogg)$/i.test(path)) {
+               try {
+                  await store.addSource(path);
+               } catch (e) {
+                  console.error("Failed to import:", e);
+               }
+            }
+         }
+      }
+   };
 
    const handleNewProject = async () => {
       if (store.modified && !confirm("Discard unsaved changes?")) return;
@@ -88,6 +130,66 @@ export function StudioView() {
       return <div className="p-8 text-center">Loading studio...</div>;
    }
 
+   if (store.project.sources.length === 0) {
+      return (
+         <div 
+            className={`flex flex-col items-center justify-center h-full gap-6 bg-slate-950 text-slate-100 p-8 text-center animate-in fade-in zoom-in duration-500 ${
+               dragActive ? "bg-blue-950/50 border-4 border-blue-500 border-dashed" : ""
+            }`}
+            onDragEnter={handleDrag}
+            onDragLeave={handleDrag}
+            onDragOver={handleDrag}
+            onDrop={handleDrop}
+         >
+            <img src="/logo.png" alt="Amen Logo" className="w-24 h-24 mb-4 drop-shadow-xl opacity-90" />
+            <h2 className="text-3xl font-bold tracking-tight">Create something new.</h2>
+            <p className="text-slate-400 text-lg max-w-sm">
+               Bring in an audio file and start shaping the moment.
+            </p>
+            <div className="flex gap-4 mt-4">
+               <button 
+                  onClick={async () => {
+                     try {
+                        const selected = await open({
+                           directory: false,
+                           multiple: true,
+                           filters: [
+                              { name: "Audio", extensions: ["mp3", "wav", "flac", "m4a", "aac", "ogg"] },
+                              { name: "All", extensions: ["*"] }
+                           ]
+                        });
+                        if (selected) {
+                           const paths = Array.isArray(selected) ? selected : [selected];
+                           for (const path of paths) {
+                              if (typeof path === "string") {
+                                 await store.addSource(path);
+                              }
+                           }
+                        }
+                     } catch (e) {
+                        console.error("Import failed:", e);
+                     }
+                  }}
+                  className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg font-medium transition shadow-lg flex items-center gap-2"
+               >
+                  <Plus size={20} />
+                  Import Audio
+               </button>
+               <button 
+                  onClick={handleOpenProject}
+                  className="bg-slate-800 hover:bg-slate-700 text-white px-6 py-3 rounded-lg font-medium transition shadow-lg flex items-center gap-2"
+               >
+                  <Download size={20} />
+                  Open Project
+               </button>
+            </div>
+            <p className="text-slate-500 text-sm mt-8">
+               {dragActive ? "Drop audio files here" : "or drag audio here"}
+            </p>
+         </div>
+      );
+   }
+
    // Calculate project duration from timeline
    const projectDuration = store.project.timeline.tracks.reduce(
       (max, track) => {
@@ -106,7 +208,22 @@ export function StudioView() {
    );
 
    return (
-      <div className="flex flex-col h-full gap-4 p-4 bg-slate-950 text-slate-100 overflow-hidden">
+      <div 
+         className="flex flex-col h-full gap-4 p-4 bg-slate-950 text-slate-100 overflow-hidden"
+         onDragEnter={handleDrag}
+         onDragLeave={handleDrag}
+         onDragOver={handleDrag}
+         onDrop={handleDrop}
+      >
+         {dragActive && (
+            <div className="absolute inset-0 z-50 flex items-center justify-center bg-blue-950/90 backdrop-blur-sm border-4 border-blue-500 border-dashed pointer-events-none">
+               <div className="text-center">
+                  <Plus size={64} className="mx-auto mb-4 text-blue-400" />
+                  <p className="text-2xl font-bold text-white">Drop audio files here</p>
+                  <p className="text-blue-300 mt-2">MP3, WAV, FLAC, M4A, AAC, OGG</p>
+               </div>
+            </div>
+         )}
          {/* Toolbar */}
          <div className="flex items-center justify-between gap-4 flex-wrap">
             <h1 className="text-2xl font-bold">
@@ -240,12 +357,14 @@ export function StudioView() {
                   onVolumeChange={(v) => store.setVolume(v)}
                   onMuteToggle={() => store.setMuted(!store.playback.muted)}
                   onPlaybackRateChange={(r) => store.setPlaybackRate(r)}
+                  previewPath={store.playback.previewPath}
                />
 
                {/* Timeline */}
                <div className="flex-1 min-h-0 overflow-hidden">
                   <Timeline
                      tracks={store.project.timeline.tracks}
+                     clips={store.project.clips}
                      duration={projectDuration || 30}
                      selectedTrackId={store.selection.selectedTrackId}
                      onAddClipToTrack={(trackId, pos) => {
@@ -257,10 +376,13 @@ export function StudioView() {
                            );
                         }
                      }}
+                     onMoveItem={(trackId, idx, newPos) =>
+                        store.moveItem(trackId, idx, newPos)
+                     }
                      onRemoveItem={(trackId, idx) =>
                         store.removeItem(trackId, idx)
                      }
-                     onSelectItem={(trackId) => store.setSelectedTrack(trackId)}
+                     onSelectItem={(trackId, _idx) => store.setSelectedTrack(trackId)}
                      onSelectTrack={(trackId) =>
                         store.setSelectedTrack(trackId)
                      }

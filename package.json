@@ -1,9 +1,9 @@
 {
-  "name": "local-media-studio",
+  "name": "amen",
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Local Media Studio — a local, offline-first media downloader powered by yt-dlp + FFmpeg",
+  "description": "Amen — a local, offline-first media downloader powered by yt-dlp + FFmpeg",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
@@ -29,6 +29,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^0.462.0",
+    "nanoid": "^6.0.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "tailwind-merge": "^2.5.5",
@@ -43,6 +44,6 @@
     "tailwindcss": "^4.0.0",
     "typescript": "^5.6.3",
     "vite": "^6.0.0",
-    "vitest": "^2.1.8"
+    "vitest": "^4.1.11"
   }
 }

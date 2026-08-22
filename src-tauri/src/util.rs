@@ -50,17 +50,25 @@ pub fn sanitize_filename_component(name: &str) -> String {
 
     // Cap length to keep path + filename under Windows limits (allow long-path ext)
     let max_bytes = 170usize;
+    if cleaned.len() <= max_bytes {
+        return cleaned;
+    }
+    
     let mut truncated = String::new();
     let mut bytes = 0usize;
     for ch in cleaned.chars() {
         let sz = ch.len_utf8();
-        if bytes + sz > max_bytes {
+        // Reserve 3 bytes for '...'
+        if bytes + sz > max_bytes - 3 {
             break;
         }
         truncated.push(ch);
         bytes += sz;
     }
-    truncated.trim_end_matches(['.', ' ']).to_string()
+    
+    let mut result = truncated.trim_end_matches(['.', ' ']).to_string();
+    result.push_str("...");
+    result
 }
 
 /// Apply a yt-dlp style `%(field)s` filename template using provided fields.

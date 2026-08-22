@@ -1,12 +1,12 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-pub const APP_NAME: &str = "Local Media Studio";
+pub const APP_NAME: &str = "Amen";
 
-/// Roaming config dir: %APPDATA%\LocalMediaStudio
+/// Roaming config dir: %APPDATA%\Amen
 pub fn app_data_dir() -> PathBuf {
     dirs::config_dir()
-        .map(|d| d.join("LocalMediaStudio"))
+        .map(|d| d.join("Amen"))
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
@@ -14,16 +14,16 @@ pub fn logs_dir() -> PathBuf {
     app_data_dir().join("logs")
 }
 
-/// Bundled tools: %LOCALAPPDATA%\LocalMediaStudio\tools
+/// Bundled tools: %LOCALAPPDATA%\Amen\tools
 pub fn tools_dir() -> PathBuf {
     dirs::data_local_dir()
-        .map(|d| d.join("LocalMediaStudio").join("tools"))
+        .map(|d| d.join("Amen").join("tools"))
         .unwrap_or_else(|| app_data_dir().join("tools"))
 }
 
 pub fn default_output_dir() -> PathBuf {
     dirs::audio_dir()
-        .map(|d| d.join("Local Media Studio"))
+        .map(|d| d.join("Amen"))
         .unwrap_or_else(|| PathBuf::from("."))
 }
 

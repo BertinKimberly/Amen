@@ -26,6 +26,9 @@ import { toast } from "@/stores/toast";
 import { formatBytes, qualityLabel } from "@/lib/format";
 import { ACTIVE_STATUSES, TERMINAL_STATUSES } from "@/lib/constants";
 import { cn } from "@/lib/utils";
+import { useStudioStore } from "@/stores/studio";
+import { useAppStore } from "@/stores/app";
+import { Scissors } from "lucide-react";
 
 export function DownloadsView() {
    const jobs = useQueueStore((s) => s.jobs);
@@ -134,6 +137,8 @@ function QueueCard({
    ].includes(job.status);
    const canRetry = ["failed", "cancelled", "interrupted"].includes(job.status);
    const canOpen = job.status === "completed" && job.outputPath;
+   const isAudio = job.format === "mp3";
+
 
    return (
       <div
@@ -224,6 +229,19 @@ function QueueCard({
                            >
                               <FolderOpen className="h-4 w-4" />
                            </ActionButton>
+                           {isAudio && (
+                              <ActionButton
+                                 label="Open in Audio Studio"
+                                 onClick={async () => {
+                                    if (job.outputPath) {
+                                       await useStudioStore.getState().addSource(job.outputPath);
+                                       useAppStore.getState().setView("studio");
+                                    }
+                                 }}
+                              >
+                                 <Scissors className="h-4 w-4" />
+                              </ActionButton>
+                           )}
                         </>
                      )}
                      <ActionButton

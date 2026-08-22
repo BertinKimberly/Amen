@@ -1,4 +1,4 @@
-# Local Media Studio
+# Amen
 
 A beautiful, local-first media downloader for **Windows 11** — powered by **yt-dlp** and **FFmpeg**.
 
@@ -152,7 +152,7 @@ npm run tauri:build
 ```
 
 The installer is written to `src-tauri/target/release/bundle/nsis/`
-(`Local Media Studio_0.1.0_x64-setup.exe`). It is a per-user NSIS installer and does not require
+(`Amen_0.1.0_x64-setup.exe`). It is a per-user NSIS installer and does not require
 admin rights.
 
 ## yt-dlp & FFmpeg setup
@@ -190,7 +190,7 @@ persisted queue live in `%APPDATA%\LocalMediaStudio\history.db`. Logs are in
 
 Defaults:
 
-- Output directory: `%USERPROFILE%\Music\Local Media Studio`
+- Output directory: `%USERPROFILE%\Music\Amen`
 - Filename template: `%(title)s.%(ext)s` (yt-dlp syntax — subdirectories like
   `%(artist)s/%(album)s/%(title)s.%(ext)s` are supported)
 - Format: MP3 · Quality: Best · Overwrite: Skip · Duplicates: Skip

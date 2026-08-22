@@ -5,6 +5,7 @@ import {
    Eye,
    FolderOpen,
    History,
+   Music2,
    RefreshCw,
    Search,
    Trash2,
@@ -30,6 +31,8 @@ import {
    DialogTitle,
 } from "@/components/ui/dialog";
 import { useHistoryStore } from "@/stores/history";
+import { useStudioStore } from "@/stores/studio";
+import { useAppStore } from "@/stores/app";
 import { api, clipboard } from "@/lib/api";
 import { toast } from "@/stores/toast";
 import {
@@ -181,8 +184,41 @@ export function HistoryView() {
 function HistoryRow({ id }: { id: string }) {
    const item = useHistoryStore((s) => s.items.find((i) => i.id === id));
    const [confirmDelete, setConfirmDelete] = useState(false);
+   const setView = useAppStore((s) => s.setView);
+   const studioStore = useStudioStore();
 
    if (!item) return null;
+
+   const handleOpenInStudio = async () => {
+      if (item.status !== "completed" || !item.filePath) {
+         toast("Cannot open", "File not available", "destructive");
+         return;
+      }
+
+      // Only MP3 is audio format from downloads (MP4 is video)
+      if (item.format !== "mp3") {
+         toast("Not supported", "Only audio files (MP3) can be opened in Audio Studio", "destructive");
+         return;
+      }
+
+      try {
+         // Initialize project if needed
+         if (!studioStore.project) {
+            await studioStore.newProject("Untitled Mix");
+         }
+
+         // Add the audio file as a source
+         await studioStore.addSource(item.filePath);
+         
+         // Navigate to studio
+         setView("studio");
+         
+         toast("Opened in Studio", item.title ?? "Audio file added", "success");
+      } catch (e) {
+         console.error("Failed to open in studio:", e);
+         toast("Failed to open", (e as Error).message, "destructive");
+      }
+   };
 
    return (
       <div className="flex items-center gap-4 rounded-xl border border-border bg-card p-3">
@@ -249,6 +285,14 @@ function HistoryRow({ id }: { id: string }) {
                   >
                      <FolderOpen className="h-4 w-4" />
                   </RowButton>
+                  {item.format === "mp3" && (
+                     <RowButton
+                        label="Open in Audio Studio"
+                        onClick={handleOpenInStudio}
+                     >
+                        <Music2 className="h-4 w-4" />
+                     </RowButton>
+                  )}
                </>
             )}
             <RowButton

@@ -16,6 +16,7 @@ interface PlayerBarProps {
    onVolumeChange?: (v: number) => void;
    onMuteToggle?: () => void;
    onPlaybackRateChange?: (r: number) => void;
+   previewPath?: string | null;
 }
 
 /**
@@ -40,8 +41,53 @@ export function PlayerBar({
    onVolumeChange,
    onMuteToggle,
    onPlaybackRateChange,
+   previewPath,
 }: PlayerBarProps) {
    const audioRef = useRef<HTMLAudioElement>(null);
+   const frameRef = useRef<number>();
+
+   useEffect(() => {
+      const audio = audioRef.current;
+      if (!audio) return;
+      
+      if (playing) {
+         audio.play().catch(console.error);
+      } else {
+         audio.pause();
+      }
+   }, [playing, previewPath]);
+
+   useEffect(() => {
+      const audio = audioRef.current;
+      if (!audio) return;
+      audio.volume = volume;
+      audio.muted = muted;
+      audio.playbackRate = playbackRate;
+   }, [volume, muted, playbackRate]);
+
+   useEffect(() => {
+      if (playing && audioRef.current) {
+         const loop = () => {
+            if (audioRef.current && !audioRef.current.paused) {
+               onSeek?.(audioRef.current.currentTime);
+            }
+            frameRef.current = requestAnimationFrame(loop);
+         };
+         frameRef.current = requestAnimationFrame(loop);
+      }
+      return () => {
+         if (frameRef.current) cancelAnimationFrame(frameRef.current);
+      };
+   }, [playing, onSeek]);
+
+   // Sync external seek (when paused or big difference)
+   useEffect(() => {
+      const audio = audioRef.current;
+      if (!audio) return;
+      if (Math.abs(audio.currentTime - playhead) > 0.5) {
+         audio.currentTime = playhead;
+      }
+   }, [playhead]);
 
    // Keyboard shortcuts (but not while focused on text input)
    useEffect(() => {
@@ -174,8 +220,12 @@ export function PlayerBar({
             Shift+←/→=±0.5s, Home/End=jump, 0-9=jump to %
          </div>
 
-         {/* Hidden audio element for potential future use */}
-         <audio ref={audioRef} />
+         {/* Hidden audio element for playback */}
+         <audio 
+            ref={audioRef} 
+            src={previewPath || undefined} 
+            onEnded={() => onStop?.()}
+         />
       </div>
    );
 }

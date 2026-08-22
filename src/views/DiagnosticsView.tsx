@@ -128,7 +128,7 @@ export function DiagnosticsView() {
                         Some components are missing
                      </h3>
                      <p className="mt-1 text-sm text-muted-foreground">
-                        Local Media Studio needs yt-dlp and FFmpeg to work. You
+                        Amen needs yt-dlp and FFmpeg to work. You
                         can install them automatically from official sources
                         below, or add them to your PATH and re-check.
                      </p>

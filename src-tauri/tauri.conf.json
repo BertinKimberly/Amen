@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Local Media Studio",
+  "productName": "Amen",
   "version": "0.1.0",
-  "identifier": "com.localmediastudio.app",
+  "identifier": "com.amen.app",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Local Media Studio",
+        "title": "Amen",
         "width": 1280,
         "height": 840,
         "minWidth": 980,
@@ -37,7 +37,7 @@
     "targets": ["nsis"],
     "category": "Utility",
     "shortDescription": "Local media downloader powered by yt-dlp + FFmpeg",
-    "longDescription": "Local Media Studio downloads media from supported URLs and converts to MP3/MP4 locally using yt-dlp and FFmpeg. Offline-first, no cloud services.",
+    "longDescription": "Amen downloads media from supported URLs and converts to MP3/MP4 locally using yt-dlp and FFmpeg. Offline-first, no cloud services.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

@@ -9,6 +9,13 @@ fn to_app_error(e: tauri_plugin_opener::Error) -> AppError {
 #[tauri::command]
 pub fn open_file(app: tauri::AppHandle, path: String) -> AppResult<()> {
     use tauri_plugin_opener::OpenerExt;
+    let p = std::path::PathBuf::from(&path);
+    if !p.exists() {
+        return Err(AppError::new("not_found", "The file no longer exists."));
+    }
+    if !p.is_file() {
+        return Err(AppError::new("not_file", "The path is not a file."));
+    }
     app.opener()
         .open_path(path, None::<&str>)
         .map_err(to_app_error)
@@ -32,7 +39,27 @@ pub fn open_folder(app: tauri::AppHandle, path: String) -> AppResult<()> {
 #[tauri::command]
 pub fn reveal_in_folder(app: tauri::AppHandle, path: String) -> AppResult<()> {
     use tauri_plugin_opener::OpenerExt;
-    app.opener()
-        .reveal_item_in_dir(path)
-        .map_err(to_app_error)
+    let p = std::path::PathBuf::from(&path);
+    if !p.exists() {
+        return Err(AppError::new("not_found", "The file no longer exists on disk."));
+    }
+    
+    // Fallback: On some versions of Windows, reveal_item_in_dir might fail for network/mapped drives.
+    // We try the plugin first, and if it fails, we fall back to a direct Command.
+    match app.opener().reveal_item_in_dir(&path) {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            // Try explicit explorer.exe /select,"path"
+            if let Ok(mut cmd) = std::process::Command::new("explorer.exe")
+                .arg("/select,")
+                .arg(&path)
+                .spawn()
+            {
+                let _ = cmd.wait();
+                Ok(())
+            } else {
+                Err(to_app_error(e))
+            }
+        }
+    }
 }

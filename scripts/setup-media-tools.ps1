@@ -4,7 +4,7 @@
 
 $ErrorActionPreference = "Stop"
 
-$toolsDir = Join-Path $env:LOCALAPPDATA "LocalMediaStudio\tools"
+$toolsDir = Join-Path $env:LOCALAPPDATA "Amen\tools"
 New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
 Write-Host "Tools directory: $toolsDir"
 
@@ -57,4 +57,4 @@ Write-Host "Verifying..."
 & (Join-Path $toolsDir "ffmpeg.exe") -version | Select-Object -First 1
 & (Join-Path $toolsDir "ffprobe.exe") -version | Select-Object -First 1
 Write-Host ""
-Write-Host "Done. Open Local Media Studio -> Diagnostics and re-check to confirm."
+Write-Host "Done. Open Amen -> Diagnostics and re-check to confirm."

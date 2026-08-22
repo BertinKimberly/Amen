@@ -223,7 +223,7 @@ mod tests {
     #[test]
     fn parses_bare_after_move_path() {
         let mut u = ProgressUpdate::default();
-        parse_line("C:\\Music\\Local Media Studio\\Song Title.mp3", &mut u);
-        assert_eq!(u.output_path.as_deref(), Some("C:\\Music\\Local Media Studio\\Song Title.mp3"));
+        parse_line("C:\\Music\\Amen\\Song Title.mp3", &mut u);
+        assert_eq!(u.output_path.as_deref(), Some("C:\\Music\\Amen\\Song Title.mp3"));
     }
 }

@@ -1,5 +1,4 @@
 import {
-   AudioWaveform,
    Download,
    History,
    Home,
@@ -33,18 +32,17 @@ export function Sidebar() {
       <aside className="flex w-56 shrink-0 flex-col border-r border-border bg-sidebar">
          {/* Brand */}
          <div className="flex items-center gap-2.5 px-4 pb-4 pt-5">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 via-purple-500 to-fuchsia-500 text-white shadow-md shadow-indigo-500/20">
-               <AudioWaveform
-                  className="h-4.5 w-4.5"
-                  strokeWidth={2.2}
-               />
-            </div>
+            <img
+               src="/logo.png"
+               alt="Amen"
+               className="h-8 w-8 rounded-lg object-contain shadow-md shadow-blue-500/20"
+            />
             <div className="leading-tight">
                <div className="text-[13px] font-semibold tracking-tight text-foreground">
-                  Local Media Studio
+                  Amen
                </div>
                <div className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-                  Download · Convert · Manage
+                  Listen · Capture · Create
                </div>
             </div>
          </div>
@@ -91,7 +89,7 @@ export function Sidebar() {
                   <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-60" />
                   <span className="relative inline-flex h-2 w-2 rounded-full bg-success" />
                </span>
-               Local processing · yt-dlp + FFmpeg
+               Local · Private · Offline
             </div>
          </div>
       </aside>

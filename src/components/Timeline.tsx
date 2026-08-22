@@ -1,9 +1,10 @@
 import { useRef, useState } from "react";
 import { Trash2 } from "lucide-react";
-import type { StudioTrack, StudioTimelineItem } from "../lib/studioTypes";
+import type { StudioTrack, StudioTimelineItem, StudioClip } from "../lib/studioTypes";
 
 interface TimelineProps {
    tracks: StudioTrack[];
+   clips: StudioClip[];
    duration: number;
    selectedTrackId?: string | null;
    selectedItemTrackId?: string | null;
@@ -37,6 +38,7 @@ export function Timeline({
    onRemoveItem,
    onSelectItem,
    onSelectTrack,
+   clips,
    playhead = 0,
 }: TimelineProps) {
    const containerRef = useRef<HTMLDivElement>(null);
@@ -50,7 +52,7 @@ export function Timeline({
 
    const pxPerSecond = 100; // pixels per second
    const trackHeight = 80;
-   const totalWidth = duration * pxPerSecond;
+   const totalWidth = Math.max(duration * pxPerSecond, 800);
 
    const handleTrackClick = (
       e: React.MouseEvent<HTMLDivElement>,
@@ -69,36 +71,28 @@ export function Timeline({
       trackId: string,
       index: number,
       type: "move" | "trimLeft" | "trimRight",
+      itemPosition: number,
    ) => {
       e.preventDefault();
+      e.stopPropagation();
       onSelectItem?.(trackId, index);
       setDragState({
          trackId,
          index,
          type,
          startX: e.clientX,
-         startPos: type === "move" ? 0 : Date.now(), // dummy
+         startPos: itemPosition,
       });
    };
 
    const handleMouseMove = (e: React.MouseEvent) => {
       if (!dragState || !containerRef.current) return;
-      const track = tracks.find((t) => t.id === dragState.trackId);
-      if (!track) return;
-      const item = track.items[dragState.index];
-      if (!item) return;
-
       const deltaX = e.clientX - dragState.startX;
       const deltaSeconds = deltaX / pxPerSecond;
 
       if (dragState.type === "move") {
          const newPos = Math.max(0, dragState.startPos + deltaSeconds);
          onMoveItem?.(dragState.trackId, dragState.index, newPos);
-      } else if (dragState.type === "trimLeft") {
-         // Adjust clip start by trimming
-         // This would require clip updates, skipped for now
-      } else if (dragState.type === "trimRight") {
-         // Adjust clip end by trimming
       }
    };
 
@@ -113,11 +107,11 @@ export function Timeline({
       >
          {/* Ruler at top */}
          <div className="sticky top-0 z-10 h-10 bg-slate-900 border-b border-slate-700 flex">
-            {Array.from({ length: Math.ceil(duration) }).map((_, i) => (
+            {Array.from({ length: Math.ceil(duration) + 1 }).map((_, i) => (
                <div
                   key={i}
                   style={{ width: pxPerSecond, minWidth: pxPerSecond }}
-                  className="border-r border-slate-700 px-1 text-xs text-slate-500 flex items-center"
+                  className="border-r border-slate-700 px-1 text-xs text-slate-500 flex items-center shrink-0"
                >
                   {i}s
                </div>
@@ -131,7 +125,7 @@ export function Timeline({
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
             onMouseLeave={handleMouseUp}
-            style={{ width: Math.max(totalWidth, 800) }}
+            style={{ width: totalWidth }}
          >
             {/* Playhead */}
             {playhead >= 0 && (
@@ -140,7 +134,7 @@ export function Timeline({
                      left: playhead * pxPerSecond,
                      height: tracks.length * trackHeight,
                   }}
-                  className="absolute top-10 w-0.5 bg-red-500 pointer-events-none z-20"
+                  className="absolute top-0 w-0.5 bg-red-500 pointer-events-none z-20"
                />
             )}
 
@@ -150,23 +144,35 @@ export function Timeline({
                   key={track.id}
                   onClick={(e) => handleTrackClick(e, track.id)}
                   style={{
-                     top: 40 + trackIdx * trackHeight,
+                     top: trackIdx * trackHeight,
                      height: trackHeight,
-                     minWidth: Math.max(totalWidth, 800),
+                     minWidth: totalWidth,
                   }}
-                  className={`absolute left-0 right-0 border-b border-slate-700 bg-slate-900 cursor-pointer hover:bg-slate-800 transition ${
-                     selectedTrackId === track.id ? "bg-blue-900" : ""
+                  className={`absolute left-0 right-0 border-b border-slate-700 cursor-pointer transition ${
+                     selectedTrackId === track.id
+                        ? "bg-blue-950"
+                        : "bg-slate-900 hover:bg-slate-800"
                   }`}
                >
+                  {/* Track label */}
+                  <div className="absolute left-2 top-1 text-xs text-slate-500 select-none pointer-events-none">
+                     Track {trackIdx + 1}
+                  </div>
+
                   {/* Track items */}
                   {track.items.map((item, itemIdx) => {
                      const isSelected =
                         selectedItemTrackId === track.id &&
                         selectedItemIndex === itemIdx;
+                     const clip = clips.find((c) => c.id === item.clipId);
+                     const clipDuration = clip ? clip.end - clip.start : 0.1;
+                     const clipName = clip ? clip.name : "Unknown";
                      return (
                         <TimelineClipItem
                            key={`${track.id}-${itemIdx}`}
                            item={item}
+                           clipName={clipName}
+                           clipDuration={clipDuration}
                            pxPerSecond={pxPerSecond}
                            trackHeight={trackHeight}
                            isSelected={isSelected}
@@ -176,6 +182,7 @@ export function Timeline({
                                  track.id,
                                  itemIdx,
                                  "move",
+                                 item.position,
                               )
                            }
                            onMouseDownTrimLeft={(e) =>
@@ -184,6 +191,7 @@ export function Timeline({
                                  track.id,
                                  itemIdx,
                                  "trimLeft",
+                                 item.position,
                               )
                            }
                            onMouseDownTrimRight={(e) =>
@@ -192,6 +200,7 @@ export function Timeline({
                                  track.id,
                                  itemIdx,
                                  "trimRight",
+                                 item.position,
                               )
                            }
                            onRemove={() => onRemoveItem?.(track.id, itemIdx)}
@@ -208,6 +217,8 @@ export function Timeline({
 
 interface TimelineClipItemProps {
    item: StudioTimelineItem;
+   clipName: string;
+   clipDuration: number;
    pxPerSecond: number;
    trackHeight: number;
    isSelected: boolean;
@@ -220,6 +231,8 @@ interface TimelineClipItemProps {
 
 function TimelineClipItem({
    item,
+   clipName,
+   clipDuration,
    pxPerSecond,
    trackHeight,
    isSelected,
@@ -230,22 +243,22 @@ function TimelineClipItem({
    onSelect,
 }: TimelineClipItemProps) {
    const left = item.position * pxPerSecond;
-   const width = Math.max(40, (item.position + 0.1) * pxPerSecond - left); // minimum width for visibility
-   const crossfadeWidth = item.crossfadePrev * pxPerSecond;
+   const width = Math.max(8, clipDuration * pxPerSecond);
+   const crossfadeWidth = (item.crossfadePrev ?? 0) * pxPerSecond;
 
    return (
       <div
-         onClick={onSelect}
+         onClick={(e) => { e.stopPropagation(); onSelect(); }}
          style={{
             left,
-            top: 4,
+            top: 16,
             width,
-            height: trackHeight - 8,
+            height: trackHeight - 24,
          }}
-         className={`absolute rounded cursor-move transition ${
+         className={`absolute rounded cursor-move transition group ${
             isSelected
-               ? "bg-blue-600 border-2 border-blue-400 shadow-lg shadow-blue-500/50"
-               : "bg-indigo-700 border border-indigo-600 hover:bg-indigo-600"
+               ? "bg-blue-600 border-2 border-blue-400 shadow-lg shadow-blue-500/30"
+               : "bg-blue-800 border border-blue-700 hover:bg-blue-700"
          }`}
          onMouseDown={onMouseDownMove}
       >
@@ -253,25 +266,30 @@ function TimelineClipItem({
          {crossfadeWidth > 0 && (
             <div
                style={{ width: Math.min(crossfadeWidth, width) }}
-               className="absolute inset-y-0 left-0 bg-gradient-to-r from-yellow-500/30 to-transparent rounded-l"
+               className="absolute inset-y-0 left-0 bg-gradient-to-r from-amber-500/40 to-transparent rounded-l pointer-events-none"
             />
          )}
 
          {/* Content */}
-         <div className="px-2 py-1 truncate text-xs text-white font-medium">
-            Clip {item.volume.toFixed(2)}x
+         <div className="px-2 py-1 truncate text-xs text-white font-medium pointer-events-none">
+            {clipName}
+            {item.muted && <span className="ml-1 opacity-60">[M]</span>}
+            {item.volume !== 1 && (
+               <span className="ml-1 opacity-60">{Math.round(item.volume * 100)}%</span>
+            )}
          </div>
 
-         {/* Trim handles */}
+         {/* Trim handle — left */}
          <div
-            style={{ width: 4 }}
-            className="absolute inset-y-0 left-0 bg-blue-400 cursor-col-resize hover:bg-yellow-400 rounded-l opacity-0 hover:opacity-100 transition"
-            onMouseDown={onMouseDownTrimLeft}
+            style={{ width: 6 }}
+            className="absolute inset-y-0 left-0 bg-blue-300 cursor-col-resize hover:bg-yellow-400 rounded-l opacity-0 group-hover:opacity-80 transition"
+            onMouseDown={(e) => { e.stopPropagation(); onMouseDownTrimLeft(e); }}
          />
+         {/* Trim handle — right */}
          <div
-            style={{ width: 4 }}
-            className="absolute inset-y-0 right-0 bg-blue-400 cursor-col-resize hover:bg-yellow-400 rounded-r opacity-0 hover:opacity-100 transition"
-            onMouseDown={onMouseDownTrimRight}
+            style={{ width: 6 }}
+            className="absolute inset-y-0 right-0 bg-blue-300 cursor-col-resize hover:bg-yellow-400 rounded-r opacity-0 group-hover:opacity-80 transition"
+            onMouseDown={(e) => { e.stopPropagation(); onMouseDownTrimRight(e); }}
          />
 
          {/* Delete button */}
@@ -280,9 +298,9 @@ function TimelineClipItem({
                e.stopPropagation();
                onRemove();
             }}
-            className="absolute top-1 right-1 p-1 bg-red-600 rounded hover:bg-red-700 opacity-0 group-hover:opacity-100 transition"
+            className="absolute top-1 right-1 p-0.5 bg-red-600 rounded hover:bg-red-500 opacity-0 group-hover:opacity-100 transition z-10"
          >
-            <Trash2 size={12} />
+            <Trash2 size={10} />
          </button>
       </div>
    );

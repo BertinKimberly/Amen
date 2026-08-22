@@ -1,0 +1,21 @@
+{
+  "name": "Amen",
+  "start_url": "/",
+  "background_color": "#0a0a11",
+  "display": "standalone",
+  "theme_color": "#3385ff",
+  "icons": [
+    {
+      "type": "image/png",
+      "sizes": "192x192",
+      "src": "/android-chrome-192x192.png"
+    },
+    {
+      "type": "image/png",
+      "sizes": "512x512",
+      "src": "/android-chrome-512x512.png"
+    }
+  ],
+  "description": "Premium local audio downloader and studio",
+  "short_name": "Amen"
+}

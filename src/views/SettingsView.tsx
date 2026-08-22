@@ -52,6 +52,7 @@ export function SettingsView() {
    const handleSave = async () => {
       setSaving(true);
       try {
+         await api.validateOutputDir(settings.outputDir);
          await save({});
          setDirty(false);
          toast(
@@ -71,7 +72,7 @@ export function SettingsView() {
          <div>
             <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
             <p className="text-sm text-muted-foreground">
-               Configure how Local Media Studio works.
+               Configure how Amen works.
             </p>
          </div>
 
