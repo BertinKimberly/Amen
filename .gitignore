@@ -21,4 +21,6 @@ Thumbs.db
 
 # Test artifacts
 tests/.output/
+test-results/
+playwright-report/
 *.part

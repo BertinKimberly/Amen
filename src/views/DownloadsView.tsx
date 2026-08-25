@@ -40,7 +40,7 @@ export function DownloadsView() {
 
    if (jobs.length === 0) {
       return (
-         <div className="mx-auto max-w-4xl px-6 py-6">
+         <div className="mx-auto max-w-6xl px-8 py-6">
             <Header />
             <EmptyState
                icon={Download}
@@ -52,7 +52,7 @@ export function DownloadsView() {
    }
 
    return (
-      <div className="mx-auto max-w-4xl space-y-4 px-6 py-6">
+      <div className="mx-auto max-w-6xl space-y-4 px-8 py-6">
          <Header
             count={jobs.length}
             onRefresh={refresh}

@@ -41,6 +41,21 @@ pub struct StudioTimelineItem {
     pub fade_out: f64,
     /// Overlap duration with the previous clip on this track (seconds).
     pub crossfade_prev: f64,
+    /// Non-destructive trim: seconds shaved off the start of the clip's
+    /// content, in addition to `clip.start`. Never mutates the source clip.
+    #[serde(default)]
+    pub trim_start: f64,
+    /// Non-destructive trim: seconds shaved off the end of the clip's
+    /// content, in addition to `clip.end`.
+    #[serde(default)]
+    pub trim_end: f64,
+}
+
+impl StudioTimelineItem {
+    /// Effective content duration after non-destructive trim is applied.
+    pub fn effective_duration(&self, clip_duration: f64) -> f64 {
+        (clip_duration - self.trim_start.max(0.0) - self.trim_end.max(0.0)).max(0.0)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -141,7 +156,7 @@ impl StudioProject {
         for track in &self.timeline.tracks {
             for item in &track.items {
                 if let Some(clip) = self.clip_by_id(&item.clip_id) {
-                    let dur = (clip.end - clip.start).max(0.0);
+                    let dur = item.effective_duration((clip.end - clip.start).max(0.0));
                     let render_start = (item.position - item.crossfade_prev).max(0.0);
                     end = end.max(render_start + dur);
                 }

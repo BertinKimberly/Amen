@@ -27,6 +27,22 @@
    --color-ring: var(--ring);
    --color-sidebar: var(--sidebar);
    --color-sidebar-foreground: var(--sidebar-foreground);
+   --color-studio-bg: var(--studio-bg);
+   --color-studio-canvas: var(--studio-canvas);
+   --color-studio-panel: var(--studio-panel);
+   --color-studio-panel-alt: var(--studio-panel-alt);
+   --color-studio-raised: var(--studio-raised);
+   --color-studio-border: var(--studio-border);
+   --color-studio-border-soft: var(--studio-border-soft);
+   --color-studio-text: var(--studio-text);
+   --color-studio-text-muted: var(--studio-text-muted);
+   --color-studio-text-faint: var(--studio-text-faint);
+   --color-studio-accent: var(--studio-accent);
+   --color-studio-accent-strong: var(--studio-accent-strong);
+   --color-studio-playhead: var(--studio-playhead);
+   --color-studio-snap: var(--studio-snap);
+   --color-studio-success: var(--studio-success);
+   --color-studio-danger: var(--studio-danger);
    --radius-sm: calc(var(--radius) - 6px);
    --radius-md: calc(var(--radius) - 3px);
    --radius-lg: var(--radius);
@@ -91,6 +107,39 @@
    --ring: #3385ff;
    --sidebar: #0d0d16;
    --sidebar-foreground: #9c9cb4;
+}
+
+/*
+ * Audio Studio workspace tokens.
+ *
+ * Like Ableton, Logic, Premiere and Resolve, the creative canvas is
+ * deliberately a fixed dark surface regardless of the app's light/dark
+ * setting — critical listening/editing benefits from a neutral, low-glare
+ * surround. It still uses Amen's own brand accent (--primary) so the Studio
+ * reads as part of the same product, not a bolted-on tool.
+ */
+.studio-shell {
+   --studio-bg: #0a0a10;
+   --studio-canvas: #0d0d14;
+   --studio-panel: #12121b;
+   --studio-panel-alt: #16161f;
+   --studio-raised: #1b1b26;
+   --studio-border: #24242f;
+   --studio-border-soft: #1a1a24;
+   --studio-text: #e9e9f2;
+   --studio-text-muted: #8b8b9e;
+   --studio-text-faint: #5c5c6e;
+   --studio-accent: #4f8cff;
+   --studio-accent-soft: rgba(79, 140, 255, 0.16);
+   --studio-accent-strong: #6ea1ff;
+   --studio-grid-major: rgba(255, 255, 255, 0.09);
+   --studio-grid-minor: rgba(255, 255, 255, 0.035);
+   --studio-playhead: #ff5470;
+   --studio-snap: #ffd166;
+   --studio-waveform-a: #5b9bff;
+   --studio-waveform-b: #8fc0ff;
+   --studio-success: #34d399;
+   --studio-danger: #f0564d;
 }
 
 @layer base {

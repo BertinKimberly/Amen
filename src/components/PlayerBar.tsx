@@ -20,15 +20,19 @@ interface PlayerBarProps {
    previewPath?: string | null;
    mode?: "source" | "timeline";
    sourcePlaybackPath?: string | null;
+   selectionEnd?: number | null; // For preview stopping
 }
 
 /**
- * Playback control bar with keyboard shortcuts:
+ * Transport bar — the playback clock is authoritative (driven by the real
+ * <audio> element's currentTime via requestAnimationFrame), never a fake
+ * independent timer, so the playhead everywhere in the Studio always agrees
+ * with what's actually playing.
+ *
+ * Keyboard shortcuts:
  * - Space: play/pause
- * - ← →: seek ±5s
- * - Shift+← →: seek ±0.5s
- * - Home/End: jump to start/end
- * - 0-9: jump to 0-90% of duration
+ * - ← →: seek ±5s, Shift+← →: seek ±0.5s
+ * - Home/End: jump to start/end, 0-9: jump to 0-90% of duration
  */
 export function PlayerBar({
    playing,
@@ -47,11 +51,11 @@ export function PlayerBar({
    previewPath,
    mode = "timeline",
    sourcePlaybackPath,
+   selectionEnd = null,
 }: PlayerBarProps) {
    const audioRef = useRef<HTMLAudioElement>(null);
    const frameRef = useRef<number>();
 
-   // Determine which audio source to play
    const audioSrc = mode === "source" && sourcePlaybackPath
       ? assetUrl(sourcePlaybackPath)
       : previewPath;
@@ -59,7 +63,6 @@ export function PlayerBar({
    useEffect(() => {
       const audio = audioRef.current;
       if (!audio) return;
-      
       if (playing) {
          audio.play().catch(console.error);
       } else {
@@ -79,7 +82,12 @@ export function PlayerBar({
       if (playing && audioRef.current) {
          const loop = () => {
             if (audioRef.current && !audioRef.current.paused) {
-               onSeek?.(audioRef.current.currentTime);
+               const currentTime = audioRef.current.currentTime;
+               if (selectionEnd !== null && currentTime >= selectionEnd) {
+                  onStop?.();
+                  return;
+               }
+               onSeek?.(currentTime);
             }
             frameRef.current = requestAnimationFrame(loop);
          };
@@ -88,7 +96,7 @@ export function PlayerBar({
       return () => {
          if (frameRef.current) cancelAnimationFrame(frameRef.current);
       };
-   }, [playing, onSeek]);
+   }, [playing, onSeek, selectionEnd, onStop]);
 
    // Sync external seek (when paused or big difference)
    useEffect(() => {
@@ -102,14 +110,9 @@ export function PlayerBar({
    // Keyboard shortcuts (but not while focused on text input)
    useEffect(() => {
       const handleKeyDown = (e: KeyboardEvent) => {
-         // Skip if user is typing in an input
-         if (
-            e.target instanceof HTMLInputElement ||
-            e.target instanceof HTMLTextAreaElement
-         ) {
+         if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
             return;
          }
-
          if (e.code === "Space") {
             e.preventDefault();
             if (playing) onPause?.();
@@ -139,103 +142,82 @@ export function PlayerBar({
       return () => window.removeEventListener("keydown", handleKeyDown);
    }, [playing, playhead, duration, onPlay, onPause, onSeek]);
 
+   const progressPct = duration > 0 ? Math.min(100, (playhead / duration) * 100) : 0;
+
    return (
-      <div className="flex flex-col gap-4 rounded-lg bg-slate-900 p-4">
-         {/* Transport buttons */}
-         <div className="flex items-center gap-3">
-            <button
-               onClick={onStop}
-               className="rounded p-2 hover:bg-slate-800 transition"
-               title="Stop (resets to 0)"
-            >
-               <SkipBack size={18} />
-            </button>
-            <button
-               onClick={() => (playing ? onPause?.() : onPlay?.())}
-               className="rounded bg-blue-600 p-2 hover:bg-blue-700 transition"
-            >
-               {playing ? <Pause size={20} /> : <Play size={20} />}
-            </button>
+      <div className="flex items-center gap-3 rounded-xl bg-studio-panel border border-studio-border px-3.5 py-2.5" title="Space=play/pause · ←/→=seek ±5s · Shift+←/→=±0.5s · Home/End=jump · 0-9=jump to %">
+         <button
+            onClick={onStop}
+            className="rounded-lg p-2 hover:bg-studio-raised transition text-studio-text-muted hover:text-studio-text"
+            title="Stop (resets to 0)"
+         >
+            <SkipBack size={16} />
+         </button>
+         <button
+            onClick={() => (playing ? onPause?.() : onPlay?.())}
+            className="rounded-full bg-studio-accent p-2.5 hover:brightness-110 transition text-white shadow-md shadow-studio-accent/30"
+         >
+            {playing ? <Pause size={17} /> : <Play size={17} className="ml-0.5" />}
+         </button>
 
-            {/* Time display */}
-            <div className="flex items-center gap-2 text-sm text-slate-300 font-mono">
-               <span>{formatTime(playhead)}</span>
-               <span className="text-slate-500">/</span>
-               <span>{formatTime(duration)}</span>
+         <div className="flex items-center gap-1.5 text-[13px] text-studio-text font-mono tabular-nums shrink-0">
+            <span>{formatTime(playhead)}</span>
+            <span className="text-studio-text-faint">/</span>
+            <span className="text-studio-text-muted">{formatTime(duration)}</span>
+         </div>
+
+         {/* Seek slider with filled progress track */}
+         <div className="relative flex-1 h-4 flex items-center group">
+            <div className="absolute inset-x-0 h-1.5 rounded-full bg-studio-canvas overflow-hidden">
+               <div className="h-full bg-studio-accent rounded-full" style={{ width: `${progressPct}%` }} />
             </div>
-
-            {/* Seek slider */}
             <input
                type="range"
                min="0"
-               max={Math.max(1, duration * 1000)} // milliseconds for precision
+               max={Math.max(1, duration * 1000)}
                value={playhead * 1000}
                onChange={(e) => onSeek?.(parseInt(e.target.value) / 1000)}
-               className="flex-1 accent-blue-600"
+               className="relative w-full h-4 appearance-none bg-transparent cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:shadow-md [&::-webkit-slider-thumb]:opacity-0 group-hover:[&::-webkit-slider-thumb]:opacity-100 [&::-webkit-slider-thumb]:transition-opacity"
             />
          </div>
 
-         {/* Volume & playback rate */}
-         <div className="flex items-center gap-4">
-            {/* Volume */}
-            <div className="flex items-center gap-2">
-               <button
-                  onClick={onMuteToggle}
-                  className="rounded p-1 hover:bg-slate-800 transition"
-               >
-                  {muted ? <VolumeX size={18} /> : <Volume2 size={18} />}
-               </button>
-               <input
-                  type="range"
-                  min="0"
-                  max="100"
-                  value={muted ? 0 : volume * 100}
-                  onChange={(e) =>
-                     onVolumeChange?.(parseInt(e.target.value) / 100)
-                  }
-                  className="w-24 accent-blue-600"
-               />
-               <span className="w-8 text-xs text-slate-400">
-                  {Math.round(volume * 100)}%
-               </span>
-            </div>
+         <div className="w-px h-6 bg-studio-border shrink-0" />
 
-            {/* Playback rate */}
-            <div className="flex items-center gap-2 ml-auto">
-               <Zap
-                  size={16}
-                  className="text-slate-400"
-               />
-               <select
-                  value={playbackRate}
-                  onChange={(e) =>
-                     onPlaybackRateChange?.(parseFloat(e.target.value))
-                  }
-                  className="rounded bg-slate-800 px-2 py-1 text-sm"
-               >
-                  <option value={0.25}>0.25x</option>
-                  <option value={0.5}>0.5x</option>
-                  <option value={0.75}>0.75x</option>
-                  <option value={1.0}>1.0x</option>
-                  <option value={1.25}>1.25x</option>
-                  <option value={1.5}>1.5x</option>
-                  <option value={2.0}>2.0x</option>
-               </select>
-            </div>
+         {/* Volume */}
+         <div className="flex items-center gap-1.5 shrink-0">
+            <button onClick={onMuteToggle} className="rounded-lg p-1 hover:bg-studio-raised transition text-studio-text-muted hover:text-studio-text">
+               {muted ? <VolumeX size={15} /> : <Volume2 size={15} />}
+            </button>
+            <input
+               type="range"
+               min="0"
+               max="100"
+               value={muted ? 0 : volume * 100}
+               onChange={(e) => onVolumeChange?.(parseInt(e.target.value) / 100)}
+               className="w-16 accent-studio-accent"
+            />
          </div>
 
-         {/* Keyboard help */}
-         <div className="text-xs text-slate-500 border-t border-slate-700 pt-2">
-            <strong>Keyboard:</strong> Space=play/pause, ←/→=seek ±5s,
-            Shift+←/→=±0.5s, Home/End=jump, 0-9=jump to %
+         {/* Playback rate */}
+         <div className="flex items-center gap-1.5 shrink-0">
+            <Zap size={13} className="text-studio-text-faint" />
+            <select
+               value={playbackRate}
+               onChange={(e) => onPlaybackRateChange?.(parseFloat(e.target.value))}
+               className="rounded-md bg-studio-canvas border border-studio-border px-1.5 py-1 text-[11px] text-studio-text-muted"
+            >
+               <option value={0.25}>0.25x</option>
+               <option value={0.5}>0.5x</option>
+               <option value={0.75}>0.75x</option>
+               <option value={1.0}>1.0x</option>
+               <option value={1.25}>1.25x</option>
+               <option value={1.5}>1.5x</option>
+               <option value={2.0}>2.0x</option>
+            </select>
          </div>
 
          {/* Hidden audio element for playback */}
-         <audio 
-            ref={audioRef} 
-            src={audioSrc || undefined} 
-            onEnded={() => onStop?.()}
-         />
+         <audio ref={audioRef} src={audioSrc || undefined} onEnded={() => onStop?.()} />
       </div>
    );
 }

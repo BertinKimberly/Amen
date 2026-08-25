@@ -60,7 +60,7 @@ export function HistoryView() {
    }, [items]);
 
    return (
-      <div className="mx-auto max-w-4xl space-y-4 px-6 py-6">
+      <div className="mx-auto max-w-6xl space-y-4 px-8 py-6">
          <div className="flex items-end justify-between">
             <div>
                <h1 className="text-xl font-semibold tracking-tight">History</h1>

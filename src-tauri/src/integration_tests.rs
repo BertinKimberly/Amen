@@ -327,6 +327,8 @@ fn studio_renders_mix_and_verifies() {
         fade_in: 0.2,
         fade_out: 0.0,
         crossfade_prev: 0.0,
+        trim_start: 0.0,
+        trim_end: 0.0,
     });
     p.timeline.tracks[0].items.push(StudioTimelineItem {
         clip_id: "c2".to_string(),
@@ -336,6 +338,8 @@ fn studio_renders_mix_and_verifies() {
         fade_in: 0.0,
         fade_out: 0.0,
         crossfade_prev: 0.5, // 0.5s crossfade into clip B
+        trim_start: 0.0,
+        trim_end: 0.0,
     });
     p.export.title = "Test Mix".to_string();
     p.export.artist = "Tester".to_string();
@@ -347,7 +351,7 @@ fn studio_renders_mix_and_verifies() {
     };
     let res = render_mix(&p, &out, &q).expect("render should succeed");
     assert!(res.size_bytes > 10_000, "mix file too small");
-    assert!(res.duration > 3.5, "mix should be ~3.5s long");
+    assert!(res.duration > 3.4 && res.duration <= 3.5001, "mix should be ~3.5s long, got {}", res.duration);
 
     // Verify with ffprobe that it is a real, playable MP3 with metadata.
     let mut probe = new_command(&ffprobe);
@@ -409,7 +413,7 @@ fn studio_export_clip_and_missing_source() {
     p.clips.push(StudioClip { id: "c1".to_string(), source_id: "s1".to_string(), name: "X".to_string(), start: 0.0, end: 1.0 });
     p.timeline.tracks[0].items.push(StudioTimelineItem {
         clip_id: "c1".to_string(), position: 0.0, volume: 1.0, muted: false,
-        fade_in: 0.0, fade_out: 0.0, crossfade_prev: 0.0,
+        fade_in: 0.0, fade_out: 0.0, crossfade_prev: 0.0, trim_start: 0.0, trim_end: 0.0,
     });
     let err = render_mix(&p, &dir.join("out.mp3"), &q).unwrap_err();
     assert!(err.message.to_lowercase().contains("missing"));

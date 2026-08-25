@@ -2,7 +2,8 @@ import { useCallback } from "react";
 import { Plus, Trash2, Play } from "lucide-react";
 import type { StudioSource } from "../lib/studioTypes";
 import { formatTime } from "../lib/studioTime";
-import { open } from "@tauri-apps/plugin-dialog";
+import { colorForSource } from "../lib/studioColors";
+import { open } from "../lib/dialog";
 
 interface SourcePanelProps {
    sources: StudioSource[];
@@ -45,72 +46,73 @@ export function SourcePanel({
    return (
       <div className="flex flex-col gap-2">
          <div className="flex items-center justify-between">
-            <h3 className="font-semibold text-sm">Sources</h3>
+            <h3 className="font-semibold text-[12px] text-studio-text uppercase tracking-wide">Sources</h3>
             <button
                onClick={handleAddSource}
-               className="rounded bg-blue-600 p-1 hover:bg-blue-700 transition"
+               className="rounded-md bg-studio-accent p-1 hover:brightness-110 transition text-white"
                title="Add audio file"
             >
-               <Plus size={16} />
+               <Plus size={14} />
             </button>
          </div>
 
-         <div className="space-y-1 max-h-48 overflow-y-auto">
+         <div className="space-y-1 max-h-48 overflow-y-auto -mx-1 px-1">
             {sources.length === 0 ? (
-               <div className="text-xs text-slate-400 p-2">No sources yet</div>
+               <div className="text-[12px] text-studio-text-faint p-2">No sources yet</div>
             ) : (
-               sources.map((src) => (
-                  <div
-                     key={src.id}
-                     onClick={() => onSelectSource?.(src.id)}
-                     className={`p-2 rounded cursor-pointer transition ${
-                        selectedSourceId === src.id
-                           ? "bg-blue-600 text-white"
-                           : "bg-slate-800 hover:bg-slate-700 text-slate-200"
-                     }`}
-                  >
-                     <div className="flex items-start justify-between gap-2">
-                        <div className="flex-1 min-w-0">
-                           <div className="font-mono text-xs truncate">
-                              {src.name}
-                           </div>
-                           <div className="text-xs text-slate-400">
-                              {formatTime(src.duration)}
-                              {src.sampleRate
-                                 ? ` @ ${src.sampleRate / 1000}kHz`
-                                 : ""}
-                           </div>
-                           {src.bpm && (
-                              <div className="text-xs text-yellow-400">
-                                 {src.bpm.toFixed(1)} BPM
+               sources.map((src) => {
+                  const color = colorForSource(src.id);
+                  return (
+                     <div
+                        key={src.id}
+                        data-testid="source-item"
+                        onClick={() => onSelectSource?.(src.id)}
+                        className={`group p-2 rounded-lg cursor-pointer transition ${
+                           selectedSourceId === src.id
+                              ? "bg-studio-accent/20 ring-1 ring-studio-accent/50"
+                              : "hover:bg-studio-raised"
+                        }`}
+                     >
+                        <div className="flex items-start gap-2">
+                           <span className={`mt-1 h-2 w-2 rounded-full shrink-0 ${color.dot}`} />
+                           <div className="flex-1 min-w-0">
+                              <div className="text-[12px] truncate font-medium text-studio-text">
+                                 {src.name}
                               </div>
-                           )}
-                        </div>
-                        <div className="flex gap-1">
-                           <button
-                              onClick={(e) => {
-                                 e.stopPropagation();
-                                 onPlayPreview?.(src.path);
-                              }}
-                              className="p-1 hover:bg-blue-700 rounded transition"
-                              title="Preview"
-                           >
-                              <Play size={12} />
-                           </button>
-                           <button
-                              onClick={(e) => {
-                                 e.stopPropagation();
-                                 onRemoveSource?.(src.id);
-                              }}
-                              className="p-1 hover:bg-red-700 rounded transition"
-                              title="Remove"
-                           >
-                              <Trash2 size={12} />
-                           </button>
+                              <div className="text-[11px] text-studio-text-muted tabular-nums">
+                                 {formatTime(src.duration)}
+                                 {src.sampleRate ? ` @ ${src.sampleRate / 1000}kHz` : ""}
+                              </div>
+                              {src.bpm && (
+                                 <div className="text-[11px] text-studio-snap">{src.bpm.toFixed(1)} BPM</div>
+                              )}
+                           </div>
+                           <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition">
+                              <button
+                                 onClick={(e) => {
+                                    e.stopPropagation();
+                                    onPlayPreview?.(src.path);
+                                 }}
+                                 className="p-1 hover:bg-white/10 rounded text-studio-text-muted hover:text-studio-text transition"
+                                 title="Preview"
+                              >
+                                 <Play size={11} />
+                              </button>
+                              <button
+                                 onClick={(e) => {
+                                    e.stopPropagation();
+                                    onRemoveSource?.(src.id);
+                                 }}
+                                 className="p-1 hover:bg-studio-danger/15 rounded text-studio-text-muted hover:text-studio-danger transition"
+                                 title="Remove"
+                              >
+                                 <Trash2 size={11} />
+                              </button>
+                           </div>
                         </div>
                      </div>
-                  </div>
-               ))
+                  );
+               })
             )}
          </div>
       </div>

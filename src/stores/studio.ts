@@ -8,6 +8,7 @@ import type {
    WaveformData,
    RenderResult,
 } from "../lib/studioTypes";
+import { itemEffectiveDuration } from "../lib/studioTypes";
 import { studioApi, assetUrl } from "../lib/api";
 import { nanoid } from "nanoid";
 
@@ -23,6 +24,15 @@ export interface PlaybackState {
    playbackRate: number; // 0.25..2.0
    mode: "source" | "timeline"; // source = play individual source, timeline = play rendered mix
    sourcePlaybackPath: string | null; // path to source being played
+   /**
+    * Disambiguates "playing the whole source" from "previewing a bounded
+    * region" while `mode === "source"` — both play the same <audio> element,
+    * but the user must never have to guess which one is happening. Null =
+    * plain source playback; "__selection__" = an ad-hoc waveform selection
+    * (no saved clip yet); any other value = the id of the StudioClip being
+    * previewed.
+    */
+   previewingClipId: string | null;
 }
 
 export interface SelectionState {
@@ -32,6 +42,9 @@ export interface SelectionState {
    selectionEnd: number | null;
    selectedClipId: string | null;
    selectedTrackId: string | null;
+   /** The timeline item (track + index within that track) currently selected. */
+   selectedItemTrackId: string | null;
+   selectedItemIndex: number | null;
 }
 
 export interface StudioStore {
@@ -75,13 +88,19 @@ export interface StudioStore {
       trackId: string,
       position: number,
    ) => void;
-   moveItem: (trackId: string, index: number, newPosition: number) => void;
+   moveItem: (trackId: string, index: number, newPosition: number, recordHistory?: boolean) => void;
    removeItem: (trackId: string, index: number) => void;
+   duplicateItem: (trackId: string, index: number) => void;
+   /** Split a timeline item into two at `atTime` (an absolute timeline position). No-ops if `atTime` doesn't fall strictly inside the item. Both halves keep playing the same underlying audio with no fade at the cut, since it's the same continuous source content. */
+   splitItem: (trackId: string, index: number, atTime: number) => void;
    updateItem: (
       trackId: string,
       index: number,
       updates: Partial<StudioTimelineItem>,
+      recordHistory?: boolean,
    ) => void;
+   /** Snapshot current state onto the undo stack without mutating anything — call once at the START of a continuous drag/trim gesture, so every subsequent live update during that gesture can skip pushing its own history entry and the whole gesture undoes as one step. */
+   checkpointHistory: () => void;
 
    // Actions: Playback
    play: () => void;
@@ -91,6 +110,10 @@ export interface StudioStore {
    setVolume: (v: number) => void;
    setMuted: (m: boolean) => void;
    setPlaybackRate: (r: number) => void;
+   /** Load a clip's source, set the selection to its bounds, and play it — unambiguously labeled as a CLIP PREVIEW, never mistaken for full-source playback. */
+   previewClip: (clipId: string) => Promise<void>;
+   /** Play the current ad-hoc waveform selection (no saved clip yet), labeled as a preview rather than full-source playback. */
+   previewSelection: () => void;
 
    // Actions: Rendering
    renderPreview: () => Promise<void>;
@@ -117,6 +140,7 @@ export interface StudioStore {
    setSelectionEnd: (time: number | null) => void;
    setSelectedClip: (id: string | null) => void;
    setSelectedTrack: (id: string | null) => void;
+   setSelectedItem: (trackId: string | null, index: number | null) => void;
 
    // Actions: Utilities
    getMissingSources: () => Promise<StudioSource[]>;
@@ -175,6 +199,7 @@ export const useStudioStore = create<StudioStore>()(
          playbackRate: 1.0,
          mode: "source",
          sourcePlaybackPath: null,
+         previewingClipId: null,
       },
       selection: {
          selectedSourceId: null,
@@ -183,6 +208,8 @@ export const useStudioStore = create<StudioStore>()(
          selectionEnd: null,
          selectedClipId: null,
          selectedTrackId: null,
+         selectedItemTrackId: null,
+         selectedItemIndex: null,
       },
       waveformCache: {},
       loadingState: "idle",
@@ -203,6 +230,8 @@ export const useStudioStore = create<StudioStore>()(
                selectionEnd: null,
                selectedClipId: null,
                selectedTrackId: null,
+               selectedItemTrackId: null,
+               selectedItemIndex: null,
             };
             state.playback = {
                playing: false,
@@ -214,6 +243,7 @@ export const useStudioStore = create<StudioStore>()(
                playbackRate: 1.0,
                mode: "source",
                sourcePlaybackPath: null,
+               previewingClipId: null,
             };
             state.waveformCache = {};
             state.loadingState = "idle";
@@ -239,6 +269,8 @@ export const useStudioStore = create<StudioStore>()(
                   selectionEnd: null,
                   selectedClipId: null,
                   selectedTrackId: null,
+                  selectedItemTrackId: null,
+                  selectedItemIndex: null,
                };
                state.loadingState = "idle";
             });
@@ -251,17 +283,21 @@ export const useStudioStore = create<StudioStore>()(
       },
 
       saveProject: async () => {
-         const state = get();
-         if (!state.project || !state.savedPath) {
+         const savedPath = get().savedPath;
+         if (!get().project || !savedPath) {
             throw new Error("No project path set; use saveProjectAs first.");
          }
+         // Immer freezes committed state in development; mutate `modifiedAt`
+         // through a producer (not directly on the object from get()), then
+         // re-read the up-to-date project for the actual save call.
          set((s: StudioStore) => {
+            if (s.project) s.project.modifiedAt = Date.now();
             s.loadingState = "saving";
          });
          try {
-            if (state.project) {
-               state.project.modifiedAt = Date.now();
-               await studioApi.saveProject(state.project, state.savedPath);
+            const project = get().project;
+            if (project) {
+               await studioApi.saveProject(project, savedPath);
             }
             set((s: StudioStore) => {
                s.modified = false;
@@ -276,14 +312,16 @@ export const useStudioStore = create<StudioStore>()(
       },
 
       saveProjectAs: async (path: string) => {
-         const state = get();
-         if (!state.project) throw new Error("No project loaded.");
+         if (!get().project) throw new Error("No project loaded.");
          set((s: StudioStore) => {
+            if (s.project) s.project.modifiedAt = Date.now();
             s.loadingState = "saving";
          });
          try {
-            state.project.modifiedAt = Date.now();
-            await studioApi.saveProject(state.project, path);
+            const project = get().project;
+            if (project) {
+               await studioApi.saveProject(project, path);
+            }
             set((s: StudioStore) => {
                s.savedPath = path;
                s.modified = false;
@@ -335,17 +373,32 @@ export const useStudioStore = create<StudioStore>()(
                JSON.parse(JSON.stringify(state.project)),
             ];
             state.future = [];
+            const removedClipIds = new Set(
+               state.project.clips.filter((c) => c.sourceId === id).map((c) => c.id),
+            );
             state.project.sources = state.project.sources.filter(
                (s) => s.id !== id,
             );
             state.project.clips = state.project.clips.filter(
                (c) => c.sourceId !== id,
             );
+            // A clip that no longer exists can't stay referenced on the
+            // timeline — the Timeline UI silently hides such items (renders
+            // nothing for them) rather than crash, which would otherwise
+            // leave an invisible, permanently un-exportable dangling
+            // reference the user has no way to discover or remove.
+            state.project.timeline.tracks.forEach((track) => {
+               track.items = track.items.filter((item) => !removedClipIds.has(item.clipId));
+            });
             if (state.selection.selectedSourceId === id) {
                state.selection.selectedSourceId = null;
                state.selection.selectedSourceWaveform = null;
             }
+            if (state.selection.selectedClipId && removedClipIds.has(state.selection.selectedClipId)) {
+               state.selection.selectedClipId = null;
+            }
             state.modified = true;
+            state.playback.previewStale = true;
          });
       },
 
@@ -362,6 +415,7 @@ export const useStudioStore = create<StudioStore>()(
                state.playback.sourcePlaybackPath = src.path;
                state.playback.playhead = 0;
                state.playback.playing = false;
+               state.playback.previewingClipId = null;
             }
          });
          await get().getSourceWaveform(id);
@@ -508,6 +562,10 @@ export const useStudioStore = create<StudioStore>()(
                state.project.timeline.tracks.filter((t) => t.id !== id);
             if (state.selection.selectedTrackId === id)
                state.selection.selectedTrackId = null;
+            if (state.selection.selectedItemTrackId === id) {
+               state.selection.selectedItemTrackId = null;
+               state.selection.selectedItemIndex = null;
+            }
             state.modified = true;
          });
       },
@@ -556,27 +614,44 @@ export const useStudioStore = create<StudioStore>()(
                fadeIn: 0,
                fadeOut: 0,
                crossfadePrev: 0,
+               trimStart: 0,
+               trimEnd: 0,
             });
             track.items.sort((a, b) => a.position - b.position);
             state.modified = true;
+            state.playback.previewStale = true;
          });
       },
 
-      moveItem: (trackId: string, index: number, newPosition: number) => {
+      moveItem: (trackId: string, index: number, newPosition: number, recordHistory = true) => {
          set((state: StudioStore) => {
             if (!state.project) return;
             const track = state.project.timeline.tracks.find(
                (t) => t.id === trackId,
             );
             if (!track || !track.items[index]) return;
+            if (recordHistory) {
+               state.past = [
+                  ...state.past,
+                  JSON.parse(JSON.stringify(state.project)),
+               ];
+               state.future = [];
+            }
+            track.items[index].position = newPosition;
+            track.items.sort((a, b) => a.position - b.position);
+            state.modified = true;
+            state.playback.previewStale = true;
+         });
+      },
+
+      checkpointHistory: () => {
+         set((state: StudioStore) => {
+            if (!state.project) return;
             state.past = [
                ...state.past,
                JSON.parse(JSON.stringify(state.project)),
             ];
             state.future = [];
-            track.items[index].position = newPosition;
-            track.items.sort((a, b) => a.position - b.position);
-            state.modified = true;
          });
       },
 
@@ -593,7 +668,43 @@ export const useStudioStore = create<StudioStore>()(
             ];
             state.future = [];
             track.items.splice(index, 1);
+            if (state.selection.selectedItemTrackId === trackId) {
+               if (state.selection.selectedItemIndex === index) {
+                  state.selection.selectedItemTrackId = null;
+                  state.selection.selectedItemIndex = null;
+               } else if (
+                  state.selection.selectedItemIndex !== null &&
+                  state.selection.selectedItemIndex > index
+               ) {
+                  state.selection.selectedItemIndex -= 1;
+               }
+            }
             state.modified = true;
+            state.playback.previewStale = true;
+         });
+      },
+
+      duplicateItem: (trackId: string, index: number) => {
+         set((state: StudioStore) => {
+            if (!state.project) return;
+            const track = state.project.timeline.tracks.find((t) => t.id === trackId);
+            const item = track?.items[index];
+            if (!track || !item) return;
+            const clip = state.project.clips.find((c) => c.id === item.clipId);
+            const clipDuration = clip ? clip.end - clip.start - (item.trimStart ?? 0) - (item.trimEnd ?? 0) : 0;
+            state.past = [
+               ...state.past,
+               JSON.parse(JSON.stringify(state.project)),
+            ];
+            state.future = [];
+            track.items.push({
+               ...item,
+               position: item.position + Math.max(0.01, clipDuration),
+               crossfadePrev: 0,
+            });
+            track.items.sort((a, b) => a.position - b.position);
+            state.modified = true;
+            state.playback.previewStale = true;
          });
       },
 
@@ -601,6 +712,7 @@ export const useStudioStore = create<StudioStore>()(
          trackId: string,
          index: number,
          updates: Partial<StudioTimelineItem>,
+         recordHistory = true,
       ) => {
          set((state: StudioStore) => {
             if (!state.project) return;
@@ -608,13 +720,59 @@ export const useStudioStore = create<StudioStore>()(
                (t) => t.id === trackId,
             );
             if (!track || !track.items[index]) return;
-            state.past = [
-               ...state.past,
-               JSON.parse(JSON.stringify(state.project)),
-            ];
-            state.future = [];
+            if (recordHistory) {
+               state.past = [
+                  ...state.past,
+                  JSON.parse(JSON.stringify(state.project)),
+               ];
+               state.future = [];
+            }
             Object.assign(track.items[index], updates);
             state.modified = true;
+            state.playback.previewStale = true;
+         });
+      },
+
+      splitItem: (trackId: string, index: number, atTime: number) => {
+         set((state: StudioStore) => {
+            if (!state.project) return;
+            const track = state.project.timeline.tracks.find((t) => t.id === trackId);
+            const item = track?.items[index];
+            if (!track || !item) return;
+            const clip = state.project.clips.find((c) => c.id === item.clipId);
+            if (!clip) return;
+
+            const MIN_PIECE_DURATION = 0.05;
+            const duration = itemEffectiveDuration(item, clip);
+            const splitOffset = atTime - item.position;
+            // Refuse a split that doesn't fall strictly inside the item, or
+            // would leave a sliver too small to be a meaningful clip.
+            if (splitOffset < MIN_PIECE_DURATION || splitOffset > duration - MIN_PIECE_DURATION) return;
+
+            state.past = [...state.past, JSON.parse(JSON.stringify(state.project))];
+            state.future = [];
+
+            const originalTrimEnd = item.trimEnd ?? 0;
+            const originalFadeOut = item.fadeOut;
+            // Both halves keep playing the exact same continuous underlying
+            // audio at the cut, so neither gets a fade there — only the
+            // outer edges (the original fadeIn/fadeOut) are preserved, and
+            // each stays on whichever half now owns that edge.
+            item.trimEnd = originalTrimEnd + (duration - splitOffset);
+            item.fadeOut = 0;
+
+            track.items.push({
+               ...item,
+               position: atTime,
+               trimStart: (item.trimStart ?? 0) + splitOffset,
+               trimEnd: originalTrimEnd,
+               fadeIn: 0,
+               fadeOut: originalFadeOut,
+               crossfadePrev: 0,
+            });
+            track.items.sort((a, b) => a.position - b.position);
+            state.modified = true;
+            state.playback.previewStale = true;
          });
       },
 
@@ -632,6 +790,7 @@ export const useStudioStore = create<StudioStore>()(
          set((s: StudioStore) => {
             s.playback.playing = false;
             s.playback.playhead = 0;
+            s.playback.previewingClipId = null;
          });
       },
       seek: (time: number) => {
@@ -652,6 +811,44 @@ export const useStudioStore = create<StudioStore>()(
       setPlaybackRate: (r: number) => {
          set((s: StudioStore) => {
             s.playback.playbackRate = Math.max(0.25, Math.min(2.0, r));
+         });
+      },
+
+      previewClip: async (clipId: string) => {
+         const state = get();
+         const clip = state.project?.clips.find((c) => c.id === clipId);
+         if (!clip) return;
+         const src = state.project?.sources.find((s) => s.id === clip.sourceId);
+         if (!src) return;
+
+         // Load the clip's source waveform if it isn't already cached — mirrors
+         // selectSource's loading path but does NOT go through the public
+         // selectSource action, which unconditionally clears previewingClipId
+         // (that clearing is exactly right when a user manually picks a
+         // source, but would immediately erase the label we're about to set).
+         set((s: StudioStore) => {
+            s.selection.selectedSourceId = clip.sourceId;
+            s.playback.mode = "source";
+            s.playback.sourcePlaybackPath = src.path;
+         });
+         await get().getSourceWaveform(clip.sourceId);
+
+         set((s: StudioStore) => {
+            s.selection.selectionStart = clip.start;
+            s.selection.selectionEnd = clip.end;
+            s.selection.selectedClipId = clipId;
+            s.playback.previewingClipId = clipId;
+            s.playback.playhead = clip.start;
+            s.playback.playing = true;
+         });
+      },
+
+      previewSelection: () => {
+         set((s: StudioStore) => {
+            if (s.selection.selectionStart === null || s.selection.selectionEnd === null) return;
+            s.playback.previewingClipId = "__selection__";
+            s.playback.playhead = s.selection.selectionStart;
+            s.playback.playing = true;
          });
       },
 
@@ -768,6 +965,12 @@ export const useStudioStore = create<StudioStore>()(
       setSelectedTrack: (id: string | null) => {
          set((s: StudioStore) => {
             s.selection.selectedTrackId = id;
+         });
+      },
+      setSelectedItem: (trackId: string | null, index: number | null) => {
+         set((s: StudioStore) => {
+            s.selection.selectedItemTrackId = trackId;
+            s.selection.selectedItemIndex = index;
          });
       },
 

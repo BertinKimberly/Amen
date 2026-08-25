@@ -160,7 +160,7 @@ admin rights.
 The app **auto-detects** each tool in this order:
 
 1. A path explicitly configured in **Settings → yt-dlp & FFmpeg**.
-2. A **bundled** copy in `%LOCALAPPDATA%\LocalMediaStudio\tools`.
+2. A **bundled** copy in `%LOCALAPPDATA%\Amen\tools`.
 3. An executable found on your **PATH**.
 
 If a tool is missing, open **Diagnostics** and click **Install both** — the app downloads
@@ -184,9 +184,9 @@ py -m pip install -U yt-dlp
 
 ## Configuration
 
-Settings are stored in `%APPDATA%\LocalMediaStudio\settings.json`. Download history and the
-persisted queue live in `%APPDATA%\LocalMediaStudio\history.db`. Logs are in
-`%APPDATA%\LocalMediaStudio\logs\app.log`.
+Settings are stored in `%APPDATA%\Amen\settings.json`. Download history and the
+persisted queue live in `%APPDATA%\Amen\history.db`. Logs are in
+`%APPDATA%\Amen\logs\app.log`.
 
 Defaults:
 
@@ -239,7 +239,7 @@ codec, duration, embedded tag). They are `#[ignore]`d by default:
 
 ```powershell
 # put your tools somewhere the test can find them, then:
-$env:LMS_TOOLS_DIR = "$env:LOCALAPPDATA\LocalMediaStudio\tools"   # or your PATH
+$env:LMS_TOOLS_DIR = "$env:LOCALAPPDATA\Amen\tools"   # or your PATH
 $env:LMS_TEST_URL   = "https://www.youtube.com/watch?v=BaW_jenozKc"  # optional
 cd src-tauri
 cargo test -- --ignored --test-threads=1
@@ -249,6 +249,25 @@ These tests use **Big Buck Bunny** (Blender Foundation's open movie, Creative Co
 publicly available clip that is appropriate for testing download tooling. The E2E test verifies
 the real pipeline: metadata extraction → argument generation → actual yt-dlp download → FFmpeg
 conversion → ffprobe verification (container, codec, duration, embedded tags).
+
+### Studio end-to-end tests (Playwright, against the real running app)
+
+`tests/*.spec.ts` drive the actual running desktop app's WebView2 instance via Chrome DevTools
+Protocol — not a plain browser tab, so `invoke()`-backed features (waveform extraction, mixing,
+export, project save/load) are exercised for real, never mocked. Requires the app to already be
+running with remote debugging enabled:
+
+```powershell
+$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=9222"
+npm run tauri:dev
+```
+
+Then, in another terminal:
+
+```bash
+npx playwright test              # full suite
+npx playwright test tests/studio-undo-redo.spec.ts   # a single file
+```
 
 ## Updating
 

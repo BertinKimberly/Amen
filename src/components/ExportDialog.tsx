@@ -35,8 +35,13 @@ export function ExportDialog({
    if (!open) return null;
 
    return (
-      <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-         <div className="bg-slate-900 rounded-lg p-6 max-w-md w-full">
+      <div
+         className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
+         onKeyDown={(e) => {
+            if (e.key === "Escape" && !isLoading) onClose();
+         }}
+      >
+         <div className="bg-studio-panel border border-studio-border rounded-lg p-6 max-w-md w-full">
             <h2 className="text-lg font-bold mb-4">Export Mix</h2>
 
             <div className="space-y-4">
@@ -46,12 +51,14 @@ export function ExportDialog({
                      Format
                   </label>
                   <select
+                     data-testid="export-format-select"
+                     autoFocus
                      value={format}
                      onChange={(e) => {
                         setFormat(e.target.value as ExportFormat);
                         setBitrate(e.target.value === "wav" ? 0 : 192);
                      }}
-                     className="w-full rounded bg-slate-800 px-3 py-2 text-sm"
+                     className="w-full rounded bg-studio-canvas border border-studio-border px-3 py-2 text-sm"
                   >
                      {EXPORT_FORMATS.map((f) => (
                         <option
@@ -73,7 +80,7 @@ export function ExportDialog({
                      <select
                         value={bitrate}
                         onChange={(e) => setBitrate(parseInt(e.target.value))}
-                        className="w-full rounded bg-slate-800 px-3 py-2 text-sm"
+                        className="w-full rounded bg-studio-canvas border border-studio-border px-3 py-2 text-sm"
                      >
                         {getBitrateOptions().map((br) => (
                            <option
@@ -92,14 +99,14 @@ export function ExportDialog({
                   <button
                      onClick={onClose}
                      disabled={isLoading}
-                     className="flex-1 rounded bg-slate-700 px-4 py-2 hover:bg-slate-600 disabled:opacity-50 transition"
+                     className="flex-1 rounded bg-studio-raised px-4 py-2 hover:bg-white/10 disabled:opacity-50 transition"
                   >
                      Cancel
                   </button>
                   <button
                      onClick={handleExport}
                      disabled={isLoading}
-                     className="flex-1 rounded bg-blue-600 px-4 py-2 hover:bg-blue-700 disabled:opacity-50 transition flex items-center justify-center gap-2"
+                     className="flex-1 rounded bg-studio-accent px-4 py-2 hover:brightness-110 disabled:opacity-50 transition flex items-center justify-center gap-2"
                   >
                      <Download size={16} />
                      {isLoading ? "Exporting..." : "Export"}

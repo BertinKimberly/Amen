@@ -9,7 +9,7 @@
 //! For every timeline item (clip placement):
 //!   -ss <clip.start> -i <source>                      (fast, accurate input seek)
 //!   [N:a]atrim=end=<dur>,asetpts=PTS-STARTPTS,        (clip content)
-//!        aresample=<sr>:ocl=stereo,volume=<gain>,     (consistent format)
+//!        aresample=<sr>:ochl=stereo,volume=<gain>,    (consistent format)
 //!        afade in/out,                                (fades & crossfades)
 //!        adelay=<pos_ms>:all=1                        (place on timeline)
 //! Per track: amix (normalize=0) of that track's clips.
@@ -91,7 +91,14 @@ fn build_mix_command_inner(
     let mut track_labels: Vec<String> = Vec::new();
     let mut clip_count = 0usize;
 
+    // Solo semantics: if any track is soloed, only soloed (and non-muted)
+    // tracks are audible. A muted track is always silent, even if soloed.
+    let any_solo = project.timeline.tracks.iter().any(|t| t.solo);
+
     for track in &project.timeline.tracks {
+        if track.muted || (any_solo && !track.solo) {
+            continue;
+        }
         let mut item_labels: Vec<String> = Vec::new();
         for (i, item) in track.items.iter().enumerate() {
             let Some(clip) = project.clip_by_id(&item.clip_id) else {
@@ -119,7 +126,10 @@ fn build_mix_command_inner(
                 ));
             }
 
-            let clip_dur = clip.end - clip.start;
+            let raw_dur = clip.end - clip.start;
+            let trim_start = item.trim_start.max(0.0).min(raw_dur);
+            let clip_dur = item.effective_duration(raw_dur);
+            let seek_start = clip.start + trim_start;
             let crossfade_prev = item.crossfade_prev.max(0.0);
             let render_start = (item.position - crossfade_prev).max(0.0);
 
@@ -136,7 +146,7 @@ fn build_mix_command_inner(
             let volume = if item.muted { 0.0 } else { item.volume.clamp(0.0, 2.0) };
 
             args.push("-ss".to_string());
-            args.push(format!("{}", clip.start));
+            args.push(format!("{}", seek_start));
             args.push("-i".to_string());
             args.push(src.path.clone());
 
@@ -144,7 +154,7 @@ fn build_mix_command_inner(
             chain.push_str(&format!(
                 "[{input_idx}:a]atrim=end={clip_dur:.6},asetpts=PTS-STARTPTS"
             ));
-            chain.push_str(&format!(",aresample={sr}:ocl=stereo"));
+            chain.push_str(&format!(",aresample={sr}:ochl=stereo"));
             chain.push_str(&format!(",volume={volume}"));
             if fade_in > 0.0 {
                 chain.push_str(&format!(",afade=t=in:st=0:d={fade_in:.6}"));
@@ -204,8 +214,11 @@ fn build_mix_command_inner(
         m
     };
 
-    // Normalization + final format.
-    let mut tail = String::new();
+    // Normalization + final format. Built as discrete filter steps (not a
+    // string with a leading comma) — a chain like `[label],filter` parses as
+    // an EMPTY first filter name in ffmpeg ("No such filter: ''"), which
+    // silently broke every render whenever this was the final segment.
+    let mut tail_steps: Vec<String> = Vec::new();
     match normalize {
         NormalizeKind::None => {}
         NormalizeKind::Loudness => {
@@ -214,16 +227,17 @@ fn build_mix_command_inner(
             } else {
                 project.settings.normalize_lufs
             };
-            tail.push_str(&format!(",loudnorm=I={lufs}:TP=-1.5:LRA=11"));
+            tail_steps.push(format!("loudnorm=I={lufs}:TP=-1.5:LRA=11"));
         }
         NormalizeKind::Peak => {
             let gain = peak_gain_db.unwrap_or(0.0).clamp(-60.0, 30.0);
-            tail.push_str(&format!(",volume={gain}dB"));
+            tail_steps.push(format!("volume={gain}dB"));
         }
     }
-    tail.push_str(&format!(",aresample={sr},aformat=sample_fmts=fltp:channel_layouts=stereo[out]"));
+    tail_steps.push(format!("aresample={sr}"));
+    tail_steps.push("aformat=sample_fmts=fltp:channel_layouts=stereo".to_string());
 
-    filters.push(format!("[{mix_label}]{tail}"));
+    filters.push(format!("[{mix_label}]{}[out]", tail_steps.join(",")));
 
     let duration = project.duration();
 
@@ -591,6 +605,8 @@ mod tests {
             fade_in: 0.5,
             fade_out: 0.5,
             crossfade_prev: 0.0,
+            trim_start: 0.0,
+            trim_end: 0.0,
         });
         p.timeline.tracks[0].items.push(StudioTimelineItem {
             clip_id: "c2".to_string(),
@@ -600,6 +616,8 @@ mod tests {
             fade_in: 0.0,
             fade_out: 0.0,
             crossfade_prev: 0.5,
+            trim_start: 0.0,
+            trim_end: 0.0,
         });
         p
     }
@@ -634,6 +652,61 @@ mod tests {
         assert!(err.is_err());
     }
 
+    fn two_track_project() -> StudioProject {
+        let mut p = StudioProject::new("TwoTracks".to_string());
+        p.sources.push(StudioSource {
+            id: "s1".to_string(), path: r"C:\Music\A.mp3".to_string(), name: "A".to_string(),
+            duration: 10.0, sample_rate: Some(44100), channels: Some(2), bpm: None,
+        });
+        p.sources.push(StudioSource {
+            id: "s2".to_string(), path: r"C:\Music\B.mp3".to_string(), name: "B".to_string(),
+            duration: 10.0, sample_rate: Some(44100), channels: Some(2), bpm: None,
+        });
+        p.clips.push(StudioClip { id: "c1".to_string(), source_id: "s1".to_string(), name: "A".to_string(), start: 0.0, end: 2.0 });
+        p.clips.push(StudioClip { id: "c2".to_string(), source_id: "s2".to_string(), name: "B".to_string(), start: 0.0, end: 2.0 });
+        p.timeline.tracks[0].items.push(StudioTimelineItem {
+            clip_id: "c1".to_string(), position: 0.0, volume: 1.0, muted: false,
+            fade_in: 0.0, fade_out: 0.0, crossfade_prev: 0.0, trim_start: 0.0, trim_end: 0.0,
+        });
+        p.timeline.tracks.push(StudioTrack {
+            id: "track-2".to_string(), name: "Track 2".to_string(), muted: false, solo: false,
+            items: vec![StudioTimelineItem {
+                clip_id: "c2".to_string(), position: 0.0, volume: 1.0, muted: false,
+                fade_in: 0.0, fade_out: 0.0, crossfade_prev: 0.0, trim_start: 0.0, trim_end: 0.0,
+            }],
+        });
+        p
+    }
+
+    #[test]
+    fn muted_track_is_excluded_from_render() {
+        let mut p = two_track_project();
+        p.timeline.tracks[0].muted = true;
+        let mix = build_mix_command_inner(&p, NormalizeKind::None, None, false).unwrap();
+        assert_eq!(mix.clip_count, 1, "only track 2's clip should render");
+        assert!(mix.args.join(" ").contains(r"C:\Music\B.mp3"));
+        assert!(!mix.args.join(" ").contains(r"C:\Music\A.mp3"));
+    }
+
+    #[test]
+    fn soloed_track_excludes_all_others() {
+        let mut p = two_track_project();
+        p.timeline.tracks[1].solo = true;
+        let mix = build_mix_command_inner(&p, NormalizeKind::None, None, false).unwrap();
+        assert_eq!(mix.clip_count, 1, "only the soloed track should render");
+        assert!(mix.args.join(" ").contains(r"C:\Music\B.mp3"));
+        assert!(!mix.args.join(" ").contains(r"C:\Music\A.mp3"));
+    }
+
+    #[test]
+    fn mute_wins_over_solo_on_the_same_track() {
+        let mut p = two_track_project();
+        p.timeline.tracks[1].solo = true;
+        p.timeline.tracks[1].muted = true;
+        let err = build_mix_command_inner(&p, NormalizeKind::None, None, false);
+        assert!(err.is_err(), "soloed-but-muted track should render nothing");
+    }
+
     #[test]
     fn missing_source_errors() {
         let mut p = sample_project();
@@ -664,5 +737,35 @@ mod tests {
         let p = sample_project();
         let mix = build_mix_command_inner(&p, NormalizeKind::Loudness, None, false).unwrap();
         assert!(mix.filter_complex.contains("loudnorm"));
+    }
+
+    /// Regression test: a filterchain segment like `[label],filtername` parses
+    /// in ffmpeg as an EMPTY first filter name ("No such filter: ''"), which
+    /// silently broke every mix render (single-clip and multi-clip alike).
+    /// No `]` may ever be immediately followed by a `,` in a valid graph here.
+    #[test]
+    fn filter_graph_never_has_empty_filter_name_after_a_pad() {
+        // Single clip on a single track (the most common real case).
+        let mut single = StudioProject::new("Single".to_string());
+        single.sources.push(StudioSource {
+            id: "s1".to_string(), path: r"C:\Music\A.mp3".to_string(), name: "A".to_string(),
+            duration: 100.0, sample_rate: Some(44100), channels: Some(2), bpm: None,
+        });
+        single.clips.push(StudioClip { id: "c1".to_string(), source_id: "s1".to_string(), name: "A".to_string(), start: 0.0, end: 4.2 });
+        single.timeline.tracks[0].items.push(StudioTimelineItem {
+            clip_id: "c1".to_string(), position: 0.0, volume: 1.0, muted: false,
+            fade_in: 0.0, fade_out: 0.0, crossfade_prev: 0.0, trim_start: 0.0, trim_end: 0.0,
+        });
+        for normalize in [NormalizeKind::None, NormalizeKind::Peak, NormalizeKind::Loudness] {
+            let mix = build_mix_command_inner(&single, normalize, Some(-3.0), false).unwrap();
+            assert!(!mix.filter_complex.contains("],"), "empty filter name bug (single clip, {normalize:?}): {}", mix.filter_complex);
+        }
+
+        // Two clips crossfading on one track (exercises the amix path too).
+        let two = sample_project();
+        for normalize in [NormalizeKind::None, NormalizeKind::Peak, NormalizeKind::Loudness] {
+            let mix = build_mix_command_inner(&two, normalize, Some(-3.0), false).unwrap();
+            assert!(!mix.filter_complex.contains("],"), "empty filter name bug (two clips, {normalize:?}): {}", mix.filter_complex);
+        }
     }
 }

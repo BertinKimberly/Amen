@@ -52,11 +52,16 @@ Want to save files somewhere else?
 
 Audio Studio lets you:
 - Import multiple audio files
-- Cut precise clips from them
-- Arrange clips on a timeline
-- Mix multiple tracks together
+- Cut precise clips from them and preview each one individually
+- Arrange clips across multiple tracks on a timeline
+- Move, trim, split, duplicate, and delete clips on the timeline
+- Mute/solo individual tracks
 - Apply volume, fades, and crossfades
+- Undo/redo any editing action
 - Export the final mix
+
+Drag the handle between the waveform and the timeline to give either one more
+room — Amen remembers your preference.
 
 ### Import Audio
 
@@ -88,19 +93,47 @@ Audio Studio lets you:
 
 **Tip:** You can create multiple clips from the same source.
 
+### Preview a Clip
+
+Before — or instead of — placing a clip on the timeline, you can hear exactly
+that clip on its own:
+
+1. Hover over a clip in the **Clip Library**
+2. Click the **▶ Preview** icon that appears on it
+3. Playback starts at the clip's start and stops exactly at its end
+4. The indicator above the player bar reads **CLIP PREVIEW** while this is
+   happening, so it's never confused with playing the whole source file
+
 ### Arrange on Timeline
 
-1. **Select a clip** - Click it in the Clip Library
-2. **Click on timeline** - Click Track 1 where you want it
-3. **Clip appears** - It's now on the timeline
-4. **Move it** - Drag the clip left or right to reposition
-5. **Add more** - Repeat with other clips
+1. **Drag a clip** - Click and drag a clip from the Clip Library onto a track
+2. **Drop it** - Release over the position where you want it; a drop indicator
+   shows exactly where it will land
+3. **Move it** - Drag a placed clip left/right to reposition it, or onto
+   another track
+4. **Trim it** - Drag either edge of a placed clip to shorten it (the
+   underlying clip in the library is untouched — this only affects the
+   timeline placement)
+5. **Split it** - Move the playhead to where you want the cut, select the
+   clip, then click **Split** in the timeline toolbar (or press **S**). Both
+   halves keep playing the same audio with no gap or fade at the cut, and can
+   then be moved, trimmed, or deleted independently
+6. **Add more tracks** - Click **+ Track** to layer additional clips
+7. **Mute / solo a track** - Use the speaker/S buttons in the track header
+8. **Undo/redo** - Every move, trim, split, and delete can be undone
+   (Ctrl+Z) and redone (Ctrl+Shift+Z)
 
 ### Preview Your Mix
 
-1. **Automatic preview** - Amen automatically renders a preview when you change things
+The player bar always shows what it's about to play — **SOURCE**,
+**CLIP PREVIEW**, or **TIMELINE MIX** — so it's never ambiguous which one
+you're hearing.
+
+1. **Switch to Timeline Mix** - Click **Timeline Mix** in the Playback row
+   (Amen renders a preview automatically the first time, and again whenever
+   the timeline changes)
 2. **Play button** - Click Play in the player bar
-3. **Seek** - Click the seek slider to jump around
+3. **Seek** - Click the seek slider, or the timeline ruler, to jump around
 4. **Volume** - Adjust volume or mute as needed
 
 ### Export Your Mix
@@ -126,6 +159,9 @@ Want to come back later?
 
 ## Keyboard Shortcuts
 
+Shortcuts are disabled while a text field (like a time input) has focus, so
+typing a number never accidentally triggers one.
+
 ### Player Bar
 - **Space** - Play / Pause
 - **←** - Seek back 5 seconds
@@ -140,6 +176,20 @@ Want to come back later?
 - **Mouse wheel** - Zoom in/out
 - **Click** - Seek to position
 - **Drag** - Select region
+- **Shift + drag** - Pan the view
+- **+ / -** - Zoom in/out
+- **Ctrl+0** - Fit the whole source to view
+
+### Timeline & Project
+- **S** - Split the selected clip at the playhead
+- **Delete / Backspace** - Delete the selected timeline clip (or library clip)
+- **Ctrl+Z** - Undo
+- **Ctrl+Shift+Z** (or **Ctrl+Y**) - Redo
+- **Ctrl+D** - Duplicate the selected clip
+- **Ctrl+S** - Save project
+- **Ctrl+O** - Open project
+- **Ctrl+N** - New project
+- **Ctrl+E** - Export mix
 
 ---
 
@@ -164,7 +214,7 @@ Import file → Select 30s-45s → Create clip → Export
 
 ### Best Practices
 
-1. **Name your clips** - Right-click to rename for easier organization
+1. **Name your clips** - Hover a clip in the Clip Library and click the pencil icon to rename it
 2. **Duplicate before experimenting** - Clone clips to try different arrangements
 3. **Save often** - Projects are small, save multiple versions
 4. **Use multiple tracks** - Layer sounds for richer mixes

@@ -11,6 +11,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
     "tauri": "tauri",
     "gen:icon": "node scripts/gen-icon.mjs",
     "tauri:dev": "tauri dev",
@@ -36,11 +38,13 @@
     "zustand": "^4.5.5"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@tailwindcss/vite": "^4.0.0",
     "@tauri-apps/cli": "^2.2.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
+    "playwright": "^1.62.1",
     "tailwindcss": "^4.0.0",
     "typescript": "^5.6.3",
     "vite": "^6.0.0",

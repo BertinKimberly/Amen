@@ -26,6 +26,35 @@ export interface StudioTimelineItem {
    fadeIn: number;
    fadeOut: number;
    crossfadePrev: number;
+   /** Non-destructive trim: seconds shaved off the start of the clip's content. */
+   trimStart: number;
+   /** Non-destructive trim: seconds shaved off the end of the clip's content. */
+   trimEnd: number;
+}
+
+/** Effective on-timeline duration of an item, after non-destructive trim. */
+export function itemEffectiveDuration(item: StudioTimelineItem, clip: StudioClip): number {
+   const raw = clip.end - clip.start;
+   return Math.max(0, raw - Math.max(0, item.trimStart) - Math.max(0, item.trimEnd));
+}
+
+/**
+ * Single authoritative timeline-duration calculation — mirrors the Rust
+ * backend's `StudioProject::duration()` exactly, so the UI never diverges
+ * from what will actually be exported.
+ */
+export function computeTimelineDuration(project: StudioProject): number {
+   let end = 0;
+   for (const track of project.timeline.tracks) {
+      for (const item of track.items) {
+         const clip = project.clips.find((c) => c.id === item.clipId);
+         if (!clip) continue;
+         const dur = itemEffectiveDuration(item, clip);
+         const renderStart = Math.max(0, item.position - Math.max(0, item.crossfadePrev));
+         end = Math.max(end, renderStart + dur);
+      }
+   }
+   return end;
 }
 
 export interface StudioTrack {
