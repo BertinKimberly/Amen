@@ -248,3 +248,11 @@ export interface AppError {
    code: string;
    detail: string | null;
 }
+
+/** Real local system telemetry (via `sysinfo`) — nothing simulated. */
+export interface SystemUsage {
+   processCpuPercent: number;
+   processMemMb: number;
+   systemMemUsedMb: number;
+   systemMemTotalMb: number;
+}

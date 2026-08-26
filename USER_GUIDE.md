@@ -104,6 +104,17 @@ that clip on its own:
 4. The indicator above the player bar reads **CLIP PREVIEW** while this is
    happening, so it's never confused with playing the whole source file
 
+### Loop a Selection and Drop Markers
+
+Two small tools that make working through a long recording much easier:
+
+- **Loop** - Select a region, click **Loop** next to Preview, then Preview it.
+  Playback repeats that region continuously instead of stopping at its end —
+  useful for judging exactly where a cut should land.
+- **Markers** - Click **Add Marker** while listening to bookmark the current
+  position (or press **M**). Click a marker to jump straight back to it, or
+  the **×** to remove it. Markers are saved with the project.
+
 ### Arrange on Timeline
 
 1. **Drag a clip** - Click and drag a clip from the Clip Library onto a track
@@ -182,6 +193,7 @@ typing a number never accidentally triggers one.
 
 ### Timeline & Project
 - **S** - Split the selected clip at the playhead
+- **M** - Add a marker at the current playhead
 - **Delete / Backspace** - Delete the selected timeline clip (or library clip)
 - **Ctrl+Z** - Undo
 - **Ctrl+Shift+Z** (or **Ctrl+Y**) - Redo

@@ -161,7 +161,35 @@ export const FIXTURES = {
    a: { path: "C:\\Users\\user\\Desktop\\amen\\tests\\fixtures\\source-a-440hz-8s.wav", name: "source-a-440hz-8s.wav", duration: 8 },
    b: { path: "C:\\Users\\user\\Desktop\\amen\\tests\\fixtures\\source-b-660hz-5s.wav", name: "source-b-660hz-5s.wav", duration: 5 },
    long: { path: "C:\\Users\\user\\Desktop\\amen\\tests\\fixtures\\source-long-40s.wav", name: "source-long-40s.wav", duration: 40 },
+   min3: { path: "C:\\Users\\user\\Desktop\\amen\\tests\\fixtures\\source-3min.wav", name: "source-3min.wav", duration: 180 },
+   min5: { path: "C:\\Users\\user\\Desktop\\amen\\tests\\fixtures\\source-5min.wav", name: "source-5min.wav", duration: 300 },
+   min12: { path: "C:\\Users\\user\\Desktop\\amen\\tests\\fixtures\\source-12min.wav", name: "source-12min.wav", duration: 720 },
 };
+
+/**
+ * Resize the REAL native Tauri window (not a CDP viewport emulation, which
+ * doesn't remap real mouse-input coordinates for this app) via the
+ * `core:window:allow-set-size` capability, and wait for the resize to land.
+ */
+export async function resizeWindow(page: Page, width: number, height: number) {
+   const result = await page.evaluate(
+      async ({ width, height }) => {
+         const internals = (window as any).__TAURI_INTERNALS__;
+         try {
+            await internals.invoke("plugin:window|set_size", {
+               label: "main",
+               value: { Logical: { width, height } },
+            });
+            return { ok: true };
+         } catch (e: any) {
+            return { ok: false, error: String(e?.message || e) };
+         }
+      },
+      { width, height },
+   );
+   if (!(result as any).ok) throw new Error("resizeWindow failed: " + (result as any).error);
+   await page.waitForTimeout(300);
+}
 
 /** Start a brand-new, empty project (accepting the discard-changes prompt if shown). */
 export async function resetToNewProject(page: Page) {

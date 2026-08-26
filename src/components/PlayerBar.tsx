@@ -20,7 +20,9 @@ interface PlayerBarProps {
    previewPath?: string | null;
    mode?: "source" | "timeline";
    sourcePlaybackPath?: string | null;
-   selectionEnd?: number | null; // For preview stopping
+   selectionStart?: number | null; // Loop-back target when `looping` is on
+   selectionEnd?: number | null; // For preview stopping (or looping back, if `looping` is on)
+   looping?: boolean;
 }
 
 /**
@@ -51,7 +53,9 @@ export function PlayerBar({
    previewPath,
    mode = "timeline",
    sourcePlaybackPath,
+   selectionStart = null,
    selectionEnd = null,
+   looping = false,
 }: PlayerBarProps) {
    const audioRef = useRef<HTMLAudioElement>(null);
    const frameRef = useRef<number>();
@@ -81,9 +85,19 @@ export function PlayerBar({
    useEffect(() => {
       if (playing && audioRef.current) {
          const loop = () => {
-            if (audioRef.current && !audioRef.current.paused) {
-               const currentTime = audioRef.current.currentTime;
+            const audio = audioRef.current;
+            if (audio && !audio.paused) {
+               const currentTime = audio.currentTime;
                if (selectionEnd !== null && currentTime >= selectionEnd) {
+                  if (looping && selectionStart !== null) {
+                     // Real audio-clock loop-back — reset the actual <audio>
+                     // element's position, not a UI approximation, so the
+                     // next frame's currentTime read is already correct.
+                     audio.currentTime = selectionStart;
+                     onSeek?.(selectionStart);
+                     frameRef.current = requestAnimationFrame(loop);
+                     return;
+                  }
                   onStop?.();
                   return;
                }
@@ -96,7 +110,7 @@ export function PlayerBar({
       return () => {
          if (frameRef.current) cancelAnimationFrame(frameRef.current);
       };
-   }, [playing, onSeek, selectionEnd, onStop]);
+   }, [playing, onSeek, selectionStart, selectionEnd, looping, onStop]);
 
    // Sync external seek (when paused or big difference)
    useEffect(() => {

@@ -269,6 +269,14 @@ npx playwright test              # full suite
 npx playwright test tests/studio-undo-redo.spec.ts   # a single file
 ```
 
+The realistic-duration performance tests (`tests/studio-performance.spec.ts`) need three
+multi-minute fixtures that are regenerated locally rather than committed (100+ MB, reproducible
+in seconds):
+
+```powershell
+powershell -File tests/fixtures/generate-fixtures.ps1
+```
+
 ## Updating
 
 - **yt-dlp**: Diagnostics → "Check for updates". The app compares against the official GitHub

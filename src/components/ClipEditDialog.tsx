@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { X } from "lucide-react";
 import type { StudioTimelineItem, StudioClip } from "../lib/studioTypes";
 import { formatTime } from "../lib/studioTime";
@@ -24,6 +24,14 @@ export function ClipEditDialog({ open, onClose, item, clip, onUpdate }: ClipEdit
    const [fadeIn, setFadeIn] = useState(0);
    const [fadeOut, setFadeOut] = useState(0);
    const [crossfadePrev, setCrossfadePrev] = useState(0);
+   const dialogRef = useRef<HTMLDivElement>(null);
+
+   // Focus once when the dialog opens (so Escape/keydown reaches it immediately)
+   // — NOT a callback ref, which would re-run on every keystroke/slider drag
+   // re-render and steal focus back from whatever control the user is using.
+   useEffect(() => {
+      if (open) dialogRef.current?.focus();
+   }, [open]);
 
    useEffect(() => {
       if (item) {
@@ -52,8 +60,13 @@ export function ClipEditDialog({ open, onClose, item, clip, onUpdate }: ClipEdit
    const maxFade = clipDuration * 0.4; // Max 40% of clip duration
 
    return (
-      <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-         <div className="bg-studio-panel rounded-lg border border-studio-border shadow-2xl max-w-md w-full">
+      <div
+         className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+         onKeyDown={(e) => {
+            if (e.key === "Escape") onClose();
+         }}
+      >
+         <div ref={dialogRef} className="bg-studio-panel rounded-lg border border-studio-border shadow-2xl max-w-md w-full" tabIndex={-1}>
             {/* Header */}
             <div className="flex items-center justify-between p-4 border-b border-studio-border">
                <h3 className="font-semibold">Edit Clip: {clip.name}</h3>

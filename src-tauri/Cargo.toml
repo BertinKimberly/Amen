@@ -1,6 +1,6 @@
 [package]
 name = "amen"
-version = "0.1.0"
+version = "0.2.0"
 description = "Amen — local media downloader powered by yt-dlp + FFmpeg"
 authors = ["Amen"]
 edition = "2021"
@@ -29,6 +29,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 ureq = { version = "2", features = ["tls", "json"] }
 windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem"] }
+sysinfo = "0.32"
 
 [profile.release]
 panic = "abort"

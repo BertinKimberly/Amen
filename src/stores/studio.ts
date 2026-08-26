@@ -9,6 +9,7 @@ import type {
    RenderResult,
 } from "../lib/studioTypes";
 import { itemEffectiveDuration } from "../lib/studioTypes";
+import { formatTime } from "../lib/studioTime";
 import { studioApi, assetUrl } from "../lib/api";
 import { nanoid } from "nanoid";
 
@@ -33,6 +34,8 @@ export interface PlaybackState {
     * previewed.
     */
    previewingClipId: string | null;
+   /** Loop the current waveform selection during source playback, instead of stopping at its end. Purely a transient playback preference — not saved with the project. */
+   looping: boolean;
 }
 
 export interface SelectionState {
@@ -77,6 +80,11 @@ export interface StudioStore {
    deleteClip: (id: string) => void;
    duplicateClip: (id: string) => StudioClip | null;
 
+   // Actions: Markers (per-source navigation bookmarks; persisted with the project)
+   addMarker: (sourceId: string, time: number, label?: string) => void;
+   removeMarker: (sourceId: string, markerId: string) => void;
+   renameMarker: (sourceId: string, markerId: string, label: string) => void;
+
    // Actions: Timeline
    addTrack: (name?: string) => void;
    removeTrack: (id: string) => void;
@@ -114,6 +122,8 @@ export interface StudioStore {
    previewClip: (clipId: string) => Promise<void>;
    /** Play the current ad-hoc waveform selection (no saved clip yet), labeled as a preview rather than full-source playback. */
    previewSelection: () => void;
+   /** Toggle looping the current waveform selection during source playback. */
+   toggleLoop: () => void;
 
    // Actions: Rendering
    renderPreview: () => Promise<void>;
@@ -200,6 +210,7 @@ export const useStudioStore = create<StudioStore>()(
          mode: "source",
          sourcePlaybackPath: null,
          previewingClipId: null,
+         looping: false,
       },
       selection: {
          selectedSourceId: null,
@@ -244,6 +255,7 @@ export const useStudioStore = create<StudioStore>()(
                mode: "source",
                sourcePlaybackPath: null,
                previewingClipId: null,
+               looping: false,
             };
             state.waveformCache = {};
             state.loadingState = "idle";
@@ -357,6 +369,7 @@ export const useStudioStore = create<StudioStore>()(
                   sampleRate: info.sampleRate,
                   channels: info.channels,
                   bpm: null,
+                  markers: [],
                });
                state.modified = true;
             });
@@ -416,6 +429,7 @@ export const useStudioStore = create<StudioStore>()(
                state.playback.playhead = 0;
                state.playback.playing = false;
                state.playback.previewingClipId = null;
+               state.playback.looping = false;
             }
          });
          await get().getSourceWaveform(id);
@@ -528,6 +542,49 @@ export const useStudioStore = create<StudioStore>()(
             state.modified = true;
          });
          return dup;
+      },
+
+      addMarker: (sourceId: string, time: number, label?: string) => {
+         set((state: StudioStore) => {
+            if (!state.project) return;
+            const src = state.project.sources.find((s) => s.id === sourceId);
+            if (!src) return;
+            state.past = [...state.past, JSON.parse(JSON.stringify(state.project))];
+            state.future = [];
+            const clamped = Math.max(0, Math.min(src.duration, time));
+            src.markers.push({
+               id: nanoid(),
+               time: clamped,
+               label: label || formatTime(clamped),
+            });
+            src.markers.sort((a, b) => a.time - b.time);
+            state.modified = true;
+         });
+      },
+
+      removeMarker: (sourceId: string, markerId: string) => {
+         set((state: StudioStore) => {
+            if (!state.project) return;
+            const src = state.project.sources.find((s) => s.id === sourceId);
+            if (!src) return;
+            state.past = [...state.past, JSON.parse(JSON.stringify(state.project))];
+            state.future = [];
+            src.markers = src.markers.filter((m) => m.id !== markerId);
+            state.modified = true;
+         });
+      },
+
+      renameMarker: (sourceId: string, markerId: string, label: string) => {
+         set((state: StudioStore) => {
+            if (!state.project) return;
+            const src = state.project.sources.find((s) => s.id === sourceId);
+            const marker = src?.markers.find((m) => m.id === markerId);
+            if (!marker) return;
+            state.past = [...state.past, JSON.parse(JSON.stringify(state.project))];
+            state.future = [];
+            marker.label = label;
+            state.modified = true;
+         });
       },
 
       addTrack: (name?: string) => {
@@ -852,6 +909,12 @@ export const useStudioStore = create<StudioStore>()(
          });
       },
 
+      toggleLoop: () => {
+         set((s: StudioStore) => {
+            s.playback.looping = !s.playback.looping;
+         });
+      },
+
       renderPreview: async () => {
          const state = get();
          if (!state.project) return;
@@ -924,8 +987,12 @@ export const useStudioStore = create<StudioStore>()(
       undo: () => {
          set((state: StudioStore) => {
             if (state.past.length === 0 || !state.project) return;
-            const newFuture = [state.project, ...state.past.slice(0, 10)];
-            state.future = newFuture.slice(0, 20);
+            // The redo stack is the current project prepended onto whatever
+            // was ALREADY there — not a slice of `past` (unrelated, older
+            // states). Getting this wrong means a second consecutive redo
+            // (with no new undo in between) silently reverts to the wrong
+            // state instead of being the no-op `canRedo()` implies.
+            state.future = [state.project, ...state.future].slice(0, 50);
             state.project = JSON.parse(
                JSON.stringify(state.past[state.past.length - 1]),
             );

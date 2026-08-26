@@ -1,4 +1,28 @@
 // Audio Studio types — mirror the Rust backend (serde camelCase).
+//
+// Stem separation (vocals/drums/bass/other), evaluated and deliberately NOT
+// implemented: it needs a bundled ML runtime (ONNX Runtime + a Demucs/UVR-class
+// model, ~100-300MB+) with real CPU-feature/hardware variance across user
+// machines, which contradicts this app's current lightweight, dependency-free-
+// beyond-yt-dlp/ffmpeg identity and installer size (~3.5MB). If it's ever
+// pursued, the extension point is here: a future `studio_separate_stems(path)`
+// Rust command would just register each separated file as an ordinary new
+// `StudioSource` (e.g. `song.vocals.wav`) — the clip/timeline/render pipeline
+// below needs no changes at all to support it.
+//
+// Sampler / live-trigger pads, evaluated and deliberately NOT implemented:
+// Amen is an asynchronous composition tool, not a live-performance one — the
+// underlying need (instant, low-friction preview of any sound) is already
+// served by the Clip Library's per-clip Preview button + the waveform Loop
+// toggle. A dedicated trigger-pad UI would duplicate that, in a form (several
+// simultaneously-overlapping one-shots) this architecture isn't built for.
+
+/** A user-placed bookmark at a specific time in a source — pure navigation metadata. */
+export interface StudioMarker {
+   id: string;
+   time: number;
+   label: string;
+}
 
 export interface StudioSource {
    id: string;
@@ -8,6 +32,7 @@ export interface StudioSource {
    sampleRate: number | null;
    channels: number | null;
    bpm: number | null;
+   markers: StudioMarker[];
 }
 
 export interface StudioClip {

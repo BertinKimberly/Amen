@@ -17,11 +17,16 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
+import { Sparkline } from "@/components/ui/sparkline";
 import { useAppStore } from "@/stores/app";
+import { useStudioStore } from "../stores/studio";
+import { computeTimelineDuration } from "../lib/studioTypes";
+import { formatTime } from "../lib/studioTime";
 import { api, onEvent, clipboard } from "@/lib/api";
 import { toast } from "@/stores/toast";
 import type { InstallProgressEvent, YtdlpUpdateInfo } from "@/lib/types";
 import { formatBytes } from "@/lib/format";
+import { useSystemUsage } from "@/lib/useSystemUsage";
 
 export function DiagnosticsView() {
    const { deps, refreshDeps } = useAppStore();
@@ -31,6 +36,8 @@ export function DiagnosticsView() {
       useState<InstallProgressEvent | null>(null);
    const [updateInfo, setUpdateInfo] = useState<YtdlpUpdateInfo | null>(null);
    const [updating, setUpdating] = useState(false);
+   const usageSamples = useSystemUsage(true);
+   const studioProject = useStudioStore((s) => s.project);
 
    const run = useCallback(async () => {
       setLoading(true);
@@ -98,7 +105,7 @@ export function DiagnosticsView() {
    const missing = deps && (!deps.ytdlp.found || !deps.ffmpeg.found);
 
    return (
-      <div className="mx-auto max-w-3xl space-y-5 px-6 py-6">
+      <div className="mx-auto max-w-6xl space-y-5 px-8 py-6">
          <div className="flex items-center justify-between">
             <div>
                <h1 className="text-xl font-semibold tracking-tight">
@@ -211,7 +218,7 @@ export function DiagnosticsView() {
             </div>
          ) : deps ? (
             <>
-               <div className="grid gap-3 sm:grid-cols-2">
+               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                   <ToolCheck
                      name="yt-dlp"
                      ok={deps.ytdlp.found}
@@ -271,100 +278,154 @@ export function DiagnosticsView() {
                   />
                </div>
 
-               {/* yt-dlp update */}
-               <Card>
-                  <CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
-                     <div className="flex items-center gap-3">
-                        <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-secondary text-primary">
-                           <Sparkles className="h-4 w-4" />
-                        </div>
-                        <div>
-                           <div className="text-sm font-medium">
-                              yt-dlp updates
+               <div className="grid gap-3 lg:grid-cols-2">
+                  {/* yt-dlp update */}
+                  <Card>
+                     <CardContent className="flex h-full flex-col gap-3 p-4">
+                        <div className="flex items-center gap-3">
+                           <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-secondary text-primary">
+                              <Sparkles className="h-4 w-4" />
                            </div>
-                           <div className="text-[12px] text-muted-foreground">
-                              {updateInfo
-                                 ? `You have ${updateInfo.current}. Latest is ${updateInfo.latest}.`
-                                 : deps.ytdlp.found
-                                   ? `Current version: ${deps.ytdlp.version ?? "unknown"}`
-                                   : "yt-dlp is not installed."}
+                           <div>
+                              <div className="text-sm font-medium">
+                                 yt-dlp updates
+                              </div>
+                              <div className="text-[12px] text-muted-foreground">
+                                 {updateInfo
+                                    ? `You have ${updateInfo.current}. Latest is ${updateInfo.latest}.`
+                                    : deps.ytdlp.found
+                                      ? `Current version: ${deps.ytdlp.version ?? "unknown"}`
+                                      : "yt-dlp is not installed."}
+                              </div>
                            </div>
                         </div>
-                     </div>
-                     <div className="flex gap-2">
-                        <Button
-                           variant="outline"
-                           size="sm"
-                           onClick={checkUpdate}
-                        >
-                           <RefreshCw className="h-3.5 w-3.5" />
-                           Check for updates
-                        </Button>
-                        {updateInfo?.updateAvailable && (
+                        <div className="flex flex-wrap gap-2">
                            <Button
+                              variant="outline"
                               size="sm"
-                              onClick={doUpdate}
-                              disabled={updating}
+                              onClick={checkUpdate}
                            >
-                              {updating ? (
-                                 <Spinner />
-                              ) : (
-                                 <CloudDownload className="h-3.5 w-3.5" />
-                              )}
-                              Update
+                              <RefreshCw className="h-3.5 w-3.5" />
+                              Check for updates
                            </Button>
-                        )}
-                     </div>
-                  </CardContent>
-               </Card>
+                           {updateInfo?.updateAvailable && (
+                              <Button
+                                 size="sm"
+                                 onClick={doUpdate}
+                                 disabled={updating}
+                              >
+                                 {updating ? (
+                                    <Spinner />
+                                 ) : (
+                                    <CloudDownload className="h-3.5 w-3.5" />
+                                 )}
+                                 Update
+                              </Button>
+                           )}
+                        </div>
+                     </CardContent>
+                  </Card>
 
-               <Card>
-                  <CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
-                     <div className="flex items-center gap-3">
-                        <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-secondary text-primary">
-                           <FolderOpen className="h-4 w-4" />
-                        </div>
-                        <div>
-                           <div className="text-sm font-medium">
-                              Logs & diagnostics
+                  <Card>
+                     <CardContent className="flex h-full flex-col gap-3 p-4">
+                        <div className="flex items-center gap-3">
+                           <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-secondary text-primary">
+                              <FolderOpen className="h-4 w-4" />
                            </div>
-                           <div className="text-[12px] text-muted-foreground">
-                              Structured logs are stored locally at{" "}
-                              {deps.toolsDir.replace(/\\tools$/, "\\logs")}.
+                           <div>
+                              <div className="text-sm font-medium">
+                                 Logs & diagnostics
+                              </div>
+                              <div className="text-[12px] text-muted-foreground">
+                                 Structured logs are stored locally at{" "}
+                                 {deps.toolsDir.replace(/\\tools$/, "\\logs")}.
+                              </div>
                            </div>
                         </div>
-                     </div>
-                     <div className="flex gap-2">
-                        <Button
-                           variant="outline"
-                           size="sm"
-                           onClick={async () => {
-                              const logs = await api.getLogsDir();
-                              await api.openFolder(logs);
-                           }}
-                        >
-                           <FolderOpen className="h-3.5 w-3.5" />
-                           Open logs folder
-                        </Button>
-                        <Button
-                           variant="outline"
-                           size="sm"
-                           onClick={async () => {
-                              const text = await api.getDiagnosticText();
-                              await clipboard.writeText(text);
-                              toast(
-                                 "Copied",
-                                 "Full diagnostic report copied to clipboard.",
-                                 "success",
-                              );
-                           }}
-                        >
-                           <ClipboardCopy className="h-3.5 w-3.5" />
-                           Copy report
-                        </Button>
-                     </div>
-                  </CardContent>
-               </Card>
+                        <div className="flex flex-wrap gap-2">
+                           <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={async () => {
+                                 const logs = await api.getLogsDir();
+                                 await api.openFolder(logs);
+                              }}
+                           >
+                              <FolderOpen className="h-3.5 w-3.5" />
+                              Open logs folder
+                           </Button>
+                           <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={async () => {
+                                 const text = await api.getDiagnosticText();
+                                 await clipboard.writeText(text);
+                                 toast(
+                                    "Copied",
+                                    "Full diagnostic report copied to clipboard.",
+                                    "success",
+                                 );
+                              }}
+                           >
+                              <ClipboardCopy className="h-3.5 w-3.5" />
+                              Copy report
+                           </Button>
+                        </div>
+                     </CardContent>
+                  </Card>
+               </div>
+
+               {/* Real system telemetry — sampled from the actual OS every 1.5s, not simulated. */}
+               <div className="grid gap-3 lg:grid-cols-2">
+                  <Card>
+                     <CardContent className="p-4">
+                        <div className="mb-2 flex items-center justify-between">
+                           <div className="flex items-center gap-2 text-sm font-medium">
+                              <Cpu className="h-4 w-4 text-muted-foreground" />
+                              Amen CPU usage
+                           </div>
+                           <span className="font-mono text-sm text-foreground/80">
+                              {usageSamples.length > 0 ? `${usageSamples[usageSamples.length - 1].processCpuPercent.toFixed(1)}%` : "—"}
+                           </span>
+                        </div>
+                        <Sparkline data={usageSamples.map((s) => s.processCpuPercent)} width={520} height={56} className="w-full" />
+                     </CardContent>
+                  </Card>
+                  <Card>
+                     <CardContent className="p-4">
+                        <div className="mb-2 flex items-center justify-between">
+                           <div className="flex items-center gap-2 text-sm font-medium">
+                              <HardDrive className="h-4 w-4 text-muted-foreground" />
+                              Amen memory usage
+                           </div>
+                           <span className="font-mono text-sm text-foreground/80">
+                              {usageSamples.length > 0 ? `${usageSamples[usageSamples.length - 1].processMemMb.toFixed(0)} MB` : "—"}
+                           </span>
+                        </div>
+                        <Sparkline data={usageSamples.map((s) => s.processMemMb)} width={520} height={56} className="w-full" />
+                        {usageSamples.length > 0 && (
+                           <p className="mt-1 text-[11px] text-muted-foreground">
+                              System: {usageSamples[usageSamples.length - 1].systemMemUsedMb.toFixed(0)} / {usageSamples[usageSamples.length - 1].systemMemTotalMb.toFixed(0)} MB used
+                           </p>
+                        )}
+                     </CardContent>
+                  </Card>
+               </div>
+
+               {/* Project statistics — real counts from the current Studio project, when one is open. */}
+               {studioProject && (
+                  <Card>
+                     <CardContent className="p-4">
+                        <div className="mb-3 text-sm font-medium">Current Studio project</div>
+                        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                           <StatTile label="Sources" value={String(studioProject.sources.length)} />
+                           <StatTile label="Clips" value={String(studioProject.clips.length)} />
+                           <StatTile label="Tracks" value={String(studioProject.timeline.tracks.length)} />
+                           <StatTile label="Timeline length" value={formatTime(computeTimelineDuration(studioProject))} />
+                        </div>
+                     </CardContent>
+                  </Card>
+               )}
 
                <p className="px-1 text-[11px] leading-relaxed text-muted-foreground">
                   Components are found on your PATH, at explicit paths
@@ -465,6 +526,15 @@ function SimpleCheck({
             <div className="font-medium text-foreground/80">{value}</div>
             {detail && <div className="mt-0.5 text-destructive">{detail}</div>}
          </div>
+      </div>
+   );
+}
+
+function StatTile({ label, value }: { label: string; value: string }) {
+   return (
+      <div className="rounded-xl border border-border bg-secondary/40 p-3">
+         <div className="text-[11px] text-muted-foreground">{label}</div>
+         <div className="mt-1 font-mono text-lg font-semibold text-foreground/90">{value}</div>
       </div>
    );
 }

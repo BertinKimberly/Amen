@@ -294,7 +294,7 @@ fn studio_renders_mix_and_verifies() {
         duration: 3.0,
         sample_rate: Some(44100),
         channels: Some(2),
-        bpm: None,
+        bpm: None, markers: vec![],
     });
     p.sources.push(StudioSource {
         id: "s2".to_string(),
@@ -303,7 +303,7 @@ fn studio_renders_mix_and_verifies() {
         duration: 2.0,
         sample_rate: Some(44100),
         channels: Some(2),
-        bpm: None,
+        bpm: None, markers: vec![],
     });
     p.clips.push(StudioClip {
         id: "c1".to_string(),
@@ -408,7 +408,7 @@ fn studio_export_clip_and_missing_source() {
     let mut p = StudioProject::new("Missing".to_string());
     p.sources.push(StudioSource {
         id: "s1".to_string(), path: dir.join("nope.wav").to_string_lossy().to_string(),
-        name: "Gone".to_string(), duration: 3.0, sample_rate: None, channels: None, bpm: None,
+        name: "Gone".to_string(), duration: 3.0, sample_rate: None, channels: None, bpm: None, markers: vec![],
     });
     p.clips.push(StudioClip { id: "c1".to_string(), source_id: "s1".to_string(), name: "X".to_string(), start: 0.0, end: 1.0 });
     p.timeline.tracks[0].items.push(StudioTimelineItem {

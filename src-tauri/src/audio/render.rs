@@ -572,7 +572,7 @@ mod tests {
             duration: 100.0,
             sample_rate: Some(44100),
             channels: Some(2),
-            bpm: None,
+            bpm: None, markers: vec![],
         });
         p.sources.push(StudioSource {
             id: "s2".to_string(),
@@ -581,7 +581,7 @@ mod tests {
             duration: 100.0,
             sample_rate: Some(44100),
             channels: Some(2),
-            bpm: None,
+            bpm: None, markers: vec![],
         });
         p.clips.push(StudioClip {
             id: "c1".to_string(),
@@ -656,11 +656,11 @@ mod tests {
         let mut p = StudioProject::new("TwoTracks".to_string());
         p.sources.push(StudioSource {
             id: "s1".to_string(), path: r"C:\Music\A.mp3".to_string(), name: "A".to_string(),
-            duration: 10.0, sample_rate: Some(44100), channels: Some(2), bpm: None,
+            duration: 10.0, sample_rate: Some(44100), channels: Some(2), bpm: None, markers: vec![],
         });
         p.sources.push(StudioSource {
             id: "s2".to_string(), path: r"C:\Music\B.mp3".to_string(), name: "B".to_string(),
-            duration: 10.0, sample_rate: Some(44100), channels: Some(2), bpm: None,
+            duration: 10.0, sample_rate: Some(44100), channels: Some(2), bpm: None, markers: vec![],
         });
         p.clips.push(StudioClip { id: "c1".to_string(), source_id: "s1".to_string(), name: "A".to_string(), start: 0.0, end: 2.0 });
         p.clips.push(StudioClip { id: "c2".to_string(), source_id: "s2".to_string(), name: "B".to_string(), start: 0.0, end: 2.0 });
@@ -749,7 +749,7 @@ mod tests {
         let mut single = StudioProject::new("Single".to_string());
         single.sources.push(StudioSource {
             id: "s1".to_string(), path: r"C:\Music\A.mp3".to_string(), name: "A".to_string(),
-            duration: 100.0, sample_rate: Some(44100), channels: Some(2), bpm: None,
+            duration: 100.0, sample_rate: Some(44100), channels: Some(2), bpm: None, markers: vec![],
         });
         single.clips.push(StudioClip { id: "c1".to_string(), source_id: "s1".to_string(), name: "A".to_string(), start: 0.0, end: 4.2 });
         single.timeline.tracks[0].items.push(StudioTimelineItem {

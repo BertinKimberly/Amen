@@ -871,7 +871,7 @@ pub fn friendly_ytdlp_error(stderr: &str) -> AppError {
     {
         "Network error while contacting the media service.".to_string()
     } else if lower.contains("http error 403") {
-        "The service rejected the request (HTTP 403). This may require cookies or may be region-blocked.".to_string()
+        "The service rejected the request (HTTP 403). This usually means yt-dlp is out of date and YouTube is blocking its current extraction method — open Diagnostics and check for a yt-dlp update first. It can also require cookies or be region-blocked.".to_string()
     } else {
         format!(
             "yt-dlp failed to process this media (exit {})",
@@ -913,6 +913,13 @@ mod tests {
     fn friendly_error_maps_ffmpeg_missing() {
         let e = friendly_ytdlp_error("ffmpeg not found. Please install or provide the path");
         assert!(e.message.contains("FFmpeg is missing"));
+    }
+
+    #[test]
+    fn friendly_error_maps_403_to_ytdlp_update_hint() {
+        let e = friendly_ytdlp_error("ERROR: unable to download video data: HTTP Error 403: Forbidden");
+        assert!(e.message.contains("yt-dlp is out of date"));
+        assert!(e.message.contains("Diagnostics"));
     }
 
     #[test]

@@ -26,6 +26,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(DownloadManager::new())
+        .manage(commands::system::SystemMonitor::new())
         .setup(|app| {
             let mgr = app.state::<Arc<DownloadManager>>();
             mgr.set_app(app.handle().clone());
@@ -68,6 +69,7 @@ pub fn run() {
             commands::studio::studio_load_project,
             commands::studio::studio_missing_sources,
             commands::studio::studio_path_exists,
+            commands::system::system_usage,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

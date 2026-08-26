@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import type { WaveformData } from "../lib/studioTypes";
+import type { WaveformData, StudioMarker } from "../lib/studioTypes";
 import { formatTime } from "../lib/studioTime";
 import { createTimeAxis, pickNiceInterval } from "../lib/timeAxis";
 import { ZoomIn, ZoomOut, Maximize2, RotateCcw } from "lucide-react";
@@ -12,6 +12,7 @@ interface WaveformViewProps {
    onSelectionChange?: (start: number, end: number) => void;
    onSeek?: (time: number) => void;
    playhead?: number;
+   markers?: StudioMarker[];
 }
 
 // Studio canvas palette — mirrors the `.studio-shell` CSS tokens (see
@@ -29,6 +30,7 @@ const PALETTE = {
    selectionFill: "rgba(79, 140, 255, 0.16)",
    selectionEdge: "#6ea1ff",
    playhead: "#ff5470",
+   marker: "#ffb454",
 };
 
 /**
@@ -47,6 +49,7 @@ export function WaveformView({
    onSelectionChange,
    onSeek,
    playhead = 0,
+   markers = [],
 }: WaveformViewProps) {
    const canvasRef = useRef<HTMLCanvasElement>(null);
    const containerRef = useRef<HTMLDivElement>(null);
@@ -279,6 +282,27 @@ export function WaveformView({
          }
       }
 
+      // Markers — user bookmarks, drawn as a flag at the top edge so they
+      // never visually compete with the selection/playhead which span the
+      // full height.
+      for (const marker of markers) {
+         const mx = timeToPixel(marker.time);
+         if (mx < -10 || mx > canvasWidth + 10) continue;
+         ctx.strokeStyle = PALETTE.marker;
+         ctx.lineWidth = 1.5;
+         ctx.beginPath();
+         ctx.moveTo(mx, 0);
+         ctx.lineTo(mx, canvasHeight);
+         ctx.stroke();
+         ctx.fillStyle = PALETTE.marker;
+         ctx.beginPath();
+         ctx.moveTo(mx, 0);
+         ctx.lineTo(mx + 7, 0);
+         ctx.lineTo(mx, 9);
+         ctx.closePath();
+         ctx.fill();
+      }
+
       // Playhead
       const playheadX = timeToPixel(playhead);
       if (playheadX >= 0 && playheadX <= canvasWidth) {
@@ -306,6 +330,7 @@ export function WaveformView({
       selectionStart,
       selectionEnd,
       playhead,
+      markers,
       timeToPixel,
    ]);
 

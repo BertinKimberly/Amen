@@ -107,7 +107,10 @@ export function Timeline({
    const headerColRef = useRef<HTMLDivElement>(null);
    const [pxPerSecond, setPxPerSecond] = useState(60);
    const [scrollLeft, setScrollLeft] = useState(0);
-   const didAutoFit = useRef(false);
+   // Once the user (or a test driving the real UI) explicitly picks a zoom
+   // level, that choice must stick — auto-fit never overrides a deliberate
+   // choice, mirroring the waveform view's identical autoZoomRef pattern.
+   const userZoomed = useRef(false);
 
    // Drag state for moving/trimming existing items (pointer-based).
    const [dragState, setDragState] = useState<{
@@ -143,16 +146,24 @@ export function Timeline({
 
    // Default zoom: most audio is a few minutes long, so show ~5 minutes of
    // useful context by default instead of opening on a nearly-empty 60s view
-   // (or, for short clips, the whole thing). Runs once, on first real content.
+   // (or, for very long content, an unusably tiny-tick-marked one). Re-fits
+   // whenever the timeline transitions from empty to having content — e.g.
+   // the first clip is placed — mirroring the waveform view's per-source
+   // auto-fit instead of a one-shot-forever calc, so a long track never gets
+   // stuck at the zoom level computed back when the timeline was still empty.
+   const hasAnyItem = tracks.some((t) => t.items.length > 0);
+   const prevHasAnyItem = useRef(false);
    useEffect(() => {
-      if (didAutoFit.current || !containerRef.current) return;
-      const viewWidth = containerRef.current.clientWidth;
-      if (viewWidth <= 0) return;
-      const targetSeconds = Math.min(Math.max(duration, 30), 300);
-      const target = (viewWidth * 0.92) / targetSeconds;
-      setPxPerSecond(Math.max(8, Math.min(200, target)));
-      didAutoFit.current = true;
-   }, [duration]);
+      if (hasAnyItem && !prevHasAnyItem.current && !userZoomed.current && containerRef.current) {
+         const viewWidth = containerRef.current.clientWidth;
+         if (viewWidth > 0) {
+            const targetSeconds = Math.min(Math.max(duration, 30), 300);
+            const target = (viewWidth * 0.92) / targetSeconds;
+            setPxPerSecond(Math.max(8, Math.min(200, target)));
+         }
+      }
+      prevHasAnyItem.current = hasAnyItem;
+   }, [hasAnyItem, duration]);
 
    // Track horizontal scroll; mirror it onto the fixed header column's own
    // (hidden) vertical scroll so headers stay aligned with their track rows.
@@ -329,9 +340,16 @@ export function Timeline({
    };
 
    // Zoom controls
-   const zoomIn = () => setPxPerSecond((prev) => Math.min(200, prev * 1.4));
-   const zoomOut = () => setPxPerSecond((prev) => Math.max(8, prev / 1.4));
+   const zoomIn = () => {
+      userZoomed.current = true;
+      setPxPerSecond((prev) => Math.min(200, prev * 1.4));
+   };
+   const zoomOut = () => {
+      userZoomed.current = true;
+      setPxPerSecond((prev) => Math.max(8, prev / 1.4));
+   };
    const fitToView = () => {
+      userZoomed.current = true;
       if (containerRef.current) {
          const viewWidth = containerRef.current.clientWidth;
          const targetPx = (viewWidth * 0.94) / minDuration;

@@ -4,6 +4,16 @@
 
 use serde::{Deserialize, Serialize};
 
+/// A user-placed bookmark at a specific time in a source — pure navigation
+/// metadata, never read by the render pipeline.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudioMarker {
+    pub id: String,
+    pub time: f64,
+    pub label: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StudioSource {
@@ -15,6 +25,10 @@ pub struct StudioSource {
     pub channels: Option<u32>,
     /// Estimated BPM (optional, best-effort). Never fabricated.
     pub bpm: Option<f64>,
+    /// `#[serde(default)]` so older .lms project files (saved before markers
+    /// existed) still load cleanly with an empty marker list.
+    #[serde(default)]
+    pub markers: Vec<StudioMarker>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

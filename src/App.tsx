@@ -35,6 +35,7 @@ export default function App() {
       initQueueEvents();
       useQueueStore.getState().refresh();
       useAppStore.getState().refreshDeps();
+      useAppStore.getState().checkForYtdlpUpdateOncePerDay();
 
       // Clipboard monitoring (opt-in via Settings → Advanced).
       // Deliberately a low-frequency poll only while the setting is on.

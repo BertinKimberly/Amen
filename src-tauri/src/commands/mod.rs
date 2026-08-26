@@ -5,6 +5,7 @@ pub mod history;
 pub mod jobs;
 pub mod settings;
 pub mod studio;
+pub mod system;
 
 use crate::config;
 use crate::download::DownloadManager;

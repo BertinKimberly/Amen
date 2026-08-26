@@ -11,6 +11,7 @@ import type {
    HistoryItem,
    InstallProgressEvent,
    Job,
+   SystemUsage,
    YtdlpUpdateInfo,
 } from "./types";
 
@@ -20,6 +21,7 @@ export const api = {
    getAppInfo: () => invoke<AppInfo>("get_app_info"),
    getLogsDir: () => invoke<string>("get_logs_dir"),
    getDiagnosticText: () => invoke<string>("get_diagnostic_text"),
+   getSystemUsage: () => invoke<SystemUsage>("system_usage"),
 
    getSettings: () => invoke<AppSettings>("get_settings"),
    saveSettings: (settings: AppSettings) =>

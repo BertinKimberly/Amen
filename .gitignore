@@ -24,3 +24,11 @@ tests/.output/
 test-results/
 playwright-report/
 *.part
+
+# Large generated audio fixtures (regenerate via tests/fixtures/generate-fixtures.ps1
+# or generate-fixtures.sh) — the short fixtures stay committed since they're tiny,
+# but the multi-minute performance-test fixtures are 100+ MB and reproducible in
+# under 2 seconds, so committing them would only bloat the repo permanently.
+tests/fixtures/source-3min.wav
+tests/fixtures/source-5min.wav
+tests/fixtures/source-12min.wav

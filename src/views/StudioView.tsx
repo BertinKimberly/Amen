@@ -7,7 +7,7 @@ import { SourcePanel } from "../components/SourcePanel";
 import { ClipLibrary } from "../components/ClipLibrary";
 import { ExportDialog } from "../components/ExportDialog";
 import { TimeInput } from "../components/TimeInput";
-import { Plus, Save, RotateCcw, RotateCw, Download, Play, GripHorizontal } from "lucide-react";
+import { Plus, Save, RotateCcw, RotateCw, Download, Play, GripHorizontal, Repeat, Flag, X } from "lucide-react";
 import { save, open } from "../lib/dialog";
 import { formatTime } from "../lib/studioTime";
 import { computeTimelineDuration } from "../lib/studioTypes";
@@ -308,6 +308,14 @@ export function StudioView() {
             }
          }
 
+         // M: Add a marker at the current playhead
+         else if (e.key === "m" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+            if (store.selection.selectedSourceId) {
+               e.preventDefault();
+               store.addMarker(store.selection.selectedSourceId, store.playback.playhead);
+            }
+         }
+
          // Ctrl/Cmd + Z: Undo
          else if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey) {
             e.preventDefault();
@@ -469,8 +477,11 @@ export function StudioView() {
    const projectDuration = computeTimelineDuration(store.project);
 
    // Calculate duration based on playback mode
+   const currentSource = store.selection.selectedSourceId
+      ? store.project.sources.find(s => s.id === store.selection.selectedSourceId)
+      : undefined;
    const effectiveDuration = store.playback.mode === "source" && store.selection.selectedSourceId
-      ? (store.project.sources.find(s => s.id === store.selection.selectedSourceId)?.duration || projectDuration)
+      ? (currentSource?.duration || projectDuration)
       : projectDuration;
 
    // What is the transport actually about to play? Source playback, a clip
@@ -646,7 +657,48 @@ export function StudioView() {
                            }}
                            onSeek={(time) => store.seek(time)}
                            playhead={store.playback.playhead}
+                           markers={currentSource?.markers}
                         />
+
+                        {/* Markers — cue-point style bookmarks for navigating this source */}
+                        <div className="flex items-center gap-2 flex-wrap bg-studio-panel px-3 py-2 rounded-xl border border-studio-border">
+                           <button
+                              onClick={() => currentSource && store.addMarker(currentSource.id, store.playback.playhead)}
+                              className="flex items-center gap-1.5 rounded-md bg-studio-raised hover:bg-white/10 border border-studio-border px-2.5 py-1 text-[11px] font-medium text-studio-text transition"
+                              title="Add a marker at the current playhead (M)"
+                           >
+                              <Flag size={12} />
+                              Add Marker
+                           </button>
+                           {currentSource && currentSource.markers.length > 0 ? (
+                              currentSource.markers.map((m) => (
+                                 <div
+                                    key={m.id}
+                                    data-testid="waveform-marker"
+                                    className="group flex items-center gap-1.5 rounded-md bg-studio-canvas border border-studio-border pl-2 pr-1 py-1 text-[11px] text-studio-text"
+                                 >
+                                    <button
+                                       onClick={() => store.seek(m.time)}
+                                       className="flex items-center gap-1.5 hover:text-studio-accent-strong transition"
+                                       title={`Jump to ${m.label}`}
+                                    >
+                                       <span className="h-1.5 w-1.5 rounded-full bg-[#ffb454] shrink-0" />
+                                       <span className="font-mono tabular-nums">{formatTime(m.time)}</span>
+                                       <span className="text-studio-text-muted">{m.label}</span>
+                                    </button>
+                                    <button
+                                       onClick={() => currentSource && store.removeMarker(currentSource.id, m.id)}
+                                       className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-studio-danger/15 hover:text-studio-danger transition"
+                                       title="Remove marker"
+                                    >
+                                       <X size={10} />
+                                    </button>
+                                 </div>
+                              ))
+                           ) : (
+                              <span className="text-[11px] text-studio-text-faint">No markers yet — bookmark positions as you listen</span>
+                           )}
+                        </div>
 
                         {/* Selection controls */}
                         {store.selection.selectionStart !== null && store.selection.selectionEnd !== null && (
@@ -687,6 +739,20 @@ export function StudioView() {
                                  >
                                     <Play size={14} />
                                     Preview
+                                 </button>
+                                 <button
+                                    onClick={() => store.toggleLoop()}
+                                    data-testid="loop-toggle"
+                                    aria-pressed={store.playback.looping}
+                                    className={`flex items-center gap-2 border px-3 py-2 rounded-lg font-medium transition text-[13px] ${
+                                       store.playback.looping
+                                          ? "bg-studio-snap/20 border-studio-snap/50 text-studio-snap"
+                                          : "bg-studio-raised hover:bg-white/10 border-studio-border text-studio-text"
+                                    }`}
+                                    title="Loop the current selection during playback"
+                                 >
+                                    <Repeat size={14} />
+                                    Loop
                                  </button>
                                  <button
                                     onClick={() => store.createClipFromSelection()}
@@ -796,7 +862,9 @@ export function StudioView() {
                         previewPath={store.playback.previewPath}
                         mode={store.playback.mode}
                         sourcePlaybackPath={store.playback.sourcePlaybackPath}
+                        selectionStart={store.playback.mode === "source" ? store.selection.selectionStart : null}
                         selectionEnd={store.playback.mode === "source" ? store.selection.selectionEnd : null}
+                        looping={store.playback.looping}
                      />
                   </div>
 
@@ -817,6 +885,7 @@ export function StudioView() {
                {/* Timeline - THE CREATIVE WORKSPACE */}
                <div className="shrink-0 overflow-hidden bg-studio-panel rounded-xl border border-studio-border p-2.5" style={{ height: timelineHeight }}>
                   <Timeline
+                     key={store.project.createdAt}
                      tracks={store.project.timeline.tracks}
                      clips={store.project.clips}
                      duration={projectDuration || 30}
