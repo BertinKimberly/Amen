@@ -6,6 +6,9 @@ use std::time::{Duration, Instant};
 /// Spawn a command on Windows without popping a console window.
 /// Always pass arguments as an array — never via a shell string.
 pub fn new_command(program: &Path) -> Command {
+    // `mut` is only used by the Windows branch below; without this the Linux
+    // build warns on every compile.
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut cmd = Command::new(program);
     #[cfg(windows)]
     {

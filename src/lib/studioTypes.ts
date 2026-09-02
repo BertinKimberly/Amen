@@ -64,13 +64,28 @@ export function itemEffectiveDuration(item: StudioTimelineItem, clip: StudioClip
 }
 
 /**
+ * Whether a track contributes any audio to the render. Mirrors the Rust
+ * renderer's solo/mute rule exactly: if anything is soloed, only soloed tracks
+ * are audible, and a muted track is silent regardless.
+ */
+export function isTrackAudible(track: StudioTrack, anySolo: boolean): boolean {
+   return !track.muted && !(anySolo && !track.solo);
+}
+
+/**
  * Single authoritative timeline-duration calculation — mirrors the Rust
- * backend's `StudioProject::duration()` exactly, so the UI never diverges
- * from what will actually be exported.
+ * renderer's own accumulated `audible_end` exactly, so the UI never diverges
+ * from what actually gets written.
+ *
+ * Silent tracks are excluded deliberately. A clip parked at 4:40 on a muted
+ * track is not in the exported file, so counting it would show the user a
+ * five-minute mix that is really twenty seconds long.
  */
 export function computeTimelineDuration(project: StudioProject): number {
+   const anySolo = project.timeline.tracks.some((t) => t.solo);
    let end = 0;
    for (const track of project.timeline.tracks) {
+      if (!isTrackAudible(track, anySolo)) continue;
       for (const item of track.items) {
          const clip = project.clips.find((c) => c.id === item.clipId);
          if (!clip) continue;
@@ -87,11 +102,80 @@ export interface StudioTrack {
    name: string;
    muted: boolean;
    solo: boolean;
+   /** Linear track gain (0..2), applied to the whole track's mix. */
+   volume: number;
    items: StudioTimelineItem[];
 }
 
 export interface StudioTimeline {
    tracks: StudioTrack[];
+}
+
+/** Where an item actually begins and ends on the timeline, after crossfade and trim. */
+export function itemSpan(
+   item: StudioTimelineItem,
+   clip: StudioClip,
+): { start: number; end: number } {
+   const start = Math.max(0, item.position - Math.max(0, item.crossfadePrev));
+   return { start, end: start + itemEffectiveDuration(item, clip) };
+}
+
+export interface CompositionStats {
+   /** Exactly what will be exported: the end of the last clip. */
+   duration: number;
+   /** Total audible clip time across all tracks (can exceed `duration` when clips overlap). */
+   contentDuration: number;
+   /** Seconds of silence before the first clip. */
+   leadingSilence: number;
+   /** Seconds of silence strictly between clips, on the busiest reading of the timeline. */
+   gapSilence: number;
+   itemCount: number;
+}
+
+/**
+ * The numbers a user needs to trust the export before running it. `duration`
+ * is the contract (see the Rust renderer's matching `atrim`/`-t`); the silence
+ * figures exist so a mix that is 4 minutes long because of dead air announces
+ * that fact in the UI instead of only in the exported file.
+ */
+export function computeCompositionStats(project: StudioProject): CompositionStats {
+   const spans: { start: number; end: number }[] = [];
+   let contentDuration = 0;
+   const anySolo = project.timeline.tracks.some((t) => t.solo);
+   for (const track of project.timeline.tracks) {
+      // Silent tracks contribute nothing to the exported file, so they must
+      // contribute nothing to the figures describing it either.
+      if (!isTrackAudible(track, anySolo)) continue;
+      for (const item of track.items) {
+         const clip = project.clips.find((c) => c.id === item.clipId);
+         if (!clip) continue;
+         const span = itemSpan(item, clip);
+         if (span.end <= span.start) continue;
+         spans.push(span);
+         contentDuration += span.end - span.start;
+      }
+   }
+   if (spans.length === 0) {
+      return { duration: 0, contentDuration: 0, leadingSilence: 0, gapSilence: 0, itemCount: 0 };
+   }
+   spans.sort((a, b) => a.start - b.start);
+   const duration = spans.reduce((max, s) => Math.max(max, s.end), 0);
+   const leadingSilence = spans[0].start;
+   // Union the spans so overlapping clips across tracks aren't double-counted
+   // as covering the timeline twice.
+   let covered = 0;
+   let cursor = spans[0].start;
+   let reach = spans[0].start;
+   for (const s of spans) {
+      if (s.start > reach) {
+         covered += reach - cursor;
+         cursor = s.start;
+      }
+      reach = Math.max(reach, s.end);
+   }
+   covered += reach - cursor;
+   const gapSilence = Math.max(0, duration - leadingSilence - covered);
+   return { duration, contentDuration, leadingSilence, gapSilence, itemCount: spans.length };
 }
 
 export interface StudioExportMeta {

@@ -22,33 +22,38 @@ use std::process::Stdio;
 
 /// Locate yt-dlp / ffmpeg / ffprobe. Prefers env var LMS_TOOLS_DIR, then PATH.
 fn resolve_tools() -> Option<(PathBuf, PathBuf, PathBuf)> {
+    // Tool names and the PATH separator are platform-specific. Hardcoding
+    // "ffmpeg.exe" and splitting PATH on ';' meant this returned None on Linux,
+    // so every integration test silently skipped instead of running.
+    let exe = |stem: &str| format!("{stem}{}", std::env::consts::EXE_SUFFIX);
+    let names = [exe("yt-dlp"), exe("ffmpeg"), exe("ffprobe")];
+
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Ok(dir) = std::env::var("LMS_TOOLS_DIR") {
         let d = PathBuf::from(dir);
-        candidates.push(d.join("yt-dlp.exe"));
-        candidates.push(d.join("ffmpeg.exe"));
-        candidates.push(d.join("ffprobe.exe"));
+        candidates.extend(names.iter().map(|n| d.join(n)));
     }
-    if let Ok(paths) = std::env::var("PATH") {
-        for dir in paths.split(';') {
-            if dir.is_empty() {
+    if let Some(paths) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&paths) {
+            if dir.as_os_str().is_empty() {
                 continue;
             }
-            candidates.push(PathBuf::from(dir).join("yt-dlp.exe"));
-            candidates.push(PathBuf::from(dir).join("ffmpeg.exe"));
-            candidates.push(PathBuf::from(dir).join("ffprobe.exe"));
+            candidates.extend(names.iter().map(|n| dir.join(n)));
         }
     }
     let find = |name: &str| -> Option<PathBuf> {
         candidates
             .iter()
-            .find(|p| p.file_name().map(|f| f.to_string_lossy().to_lowercase()) == Some(name.to_string()))
-            .filter(|p| p.is_file())
+            .find(|p| {
+                p.file_name().map(|f| f.to_string_lossy().to_lowercase())
+                    == Some(name.to_lowercase())
+                    && p.is_file()
+            })
             .cloned()
     };
-    let ytdlp = find("yt-dlp.exe")?;
-    let ffmpeg = find("ffmpeg.exe")?;
-    let ffprobe = find("ffprobe.exe")?;
+    let ytdlp = find(&names[0])?;
+    let ffmpeg = find(&names[1])?;
+    let ffprobe = find(&names[2])?;
     Some((ytdlp, ffmpeg, ffprobe))
 }
 
@@ -216,7 +221,12 @@ fn real_mp3_download_and_verify() {
     assert!(meta.len() > 10_000, "mp3 suspiciously small: {} bytes", meta.len());
 
     // Verify with ffprobe that this is a real, playable MP3 with metadata.
-    let mut probe = new_command(&ffmpeg.parent().unwrap().join("ffprobe.exe"));
+    let mut probe = new_command(
+        &ffmpeg
+            .parent()
+            .unwrap()
+            .join(format!("ffprobe{}", std::env::consts::EXE_SUFFIX)),
+    );
     probe.args([
         "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams",
     ]);

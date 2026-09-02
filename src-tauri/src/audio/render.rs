@@ -29,6 +29,11 @@ use std::process::Stdio;
 
 pub const SUPPORTED_FORMATS: &[&str] = &["mp3", "wav", "flac", "m4a"];
 
+/// Slack added to each input's `-t` read bound so container-level seek
+/// imprecision can never shorten a clip — the filter graph's `atrim` stays the
+/// authority on the exact cut. See its use in [`build_mix_command_inner`].
+const INPUT_READ_EPSILON: f64 = 1.0;
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RenderResult {
@@ -90,6 +95,17 @@ fn build_mix_command_inner(
     let mut input_idx = 0usize;
     let mut track_labels: Vec<String> = Vec::new();
     let mut clip_count = 0usize;
+    // The exported duration is derived from the clips that are ACTUALLY in the
+    // graph, accumulated as they are added below — never from
+    // `project.duration()`, which counts every item on every track including
+    // the muted and un-soloed ones this loop deliberately skips. When the last
+    // clip of an arrangement sits on a muted track, `project.duration()`
+    // reports an end that no audible sample reaches, so both halves of the
+    // duration contract (the `atrim` tail step and the output `-t`) would be
+    // set past the real end of the audio and stop bounding anything, and the
+    // duration reported back to the UI would describe a file that was never
+    // written.
+    let mut audible_end = 0.0f64;
 
     // Solo semantics: if any track is soloed, only soloed (and non-muted)
     // tracks are audible. A muted track is always silent, even if soloed.
@@ -145,8 +161,22 @@ fn build_mix_command_inner(
 
             let volume = if item.muted { 0.0 } else { item.volume.clamp(0.0, 2.0) };
 
+            audible_end = audible_end.max(render_start + clip_dur);
+
             args.push("-ss".to_string());
             args.push(format!("{}", seek_start));
+            // Per-input read bound, as defense in depth rather than for speed:
+            // measured against a 12-minute WAV it is a wash (~100ms either
+            // way), because the graph's `atrim` already EOFs the input and
+            // ffmpeg stops pulling. Its value is that the source can no longer
+            // leak past its clip even if a downstream filter is ever added that
+            // does not propagate EOF promptly. The epsilon keeps the
+            // filter-graph `atrim` the sole authority on the exact cut: an
+            // approximate container seek (MP3/AAC land on a frame boundary, not
+            // a sample) could otherwise make the demuxer, not the arrangement,
+            // decide a clip's length and silently shorten it.
+            args.push("-t".to_string());
+            args.push(format!("{:.6}", clip_dur + INPUT_READ_EPSILON));
             args.push("-i".to_string());
             args.push(src.path.clone());
 
@@ -178,16 +208,33 @@ fn build_mix_command_inner(
         if item_labels.is_empty() {
             continue; // empty track contributes nothing
         }
-        let track_label = if item_labels.len() == 1 {
+        // Track gain: a value of exactly 1.0 adds no filter at all, so the
+        // common case produces the same graph it always did.
+        let track_gain = track.volume.clamp(0.0, 2.0);
+        let gain_step = if (track_gain - 1.0).abs() > 1e-6 {
+            format!(",volume={track_gain}")
+        } else {
+            String::new()
+        };
+
+        let track_label = if item_labels.len() == 1 && gain_step.is_empty() {
             item_labels[0].clone()
         } else {
             let t = format!("track{}", track_labels.len());
-            filters.push(format!(
-                "{}amix=inputs={}:normalize=0:duration=longest[{}]",
-                item_labels.iter().map(|l| format!("[{l}]")).collect::<String>(),
-                item_labels.len(),
-                t
-            ));
+            if item_labels.len() == 1 {
+                // A single item still needs its own segment when the track has
+                // gain — `[c0]volume=..[t]`, never `[c0],volume=..` (a leading
+                // comma parses as an empty filter name and kills the render).
+                filters.push(format!("[{}]{}[{}]", item_labels[0], &gain_step[1..], t));
+            } else {
+                filters.push(format!(
+                    "{}amix=inputs={}:normalize=0:duration=longest{}[{}]",
+                    item_labels.iter().map(|l| format!("[{l}]")).collect::<String>(),
+                    item_labels.len(),
+                    gain_step,
+                    t
+                ));
+            }
             t
         };
         track_labels.push(track_label);
@@ -214,11 +261,28 @@ fn build_mix_command_inner(
         m
     };
 
+    // See `audible_end` above: the end of the last clip that this graph
+    // actually renders, which is the composition's true endpoint.
+    let duration = audible_end;
+
     // Normalization + final format. Built as discrete filter steps (not a
     // string with a leading comma) — a chain like `[label],filter` parses as
     // an EMPTY first filter name in ffmpeg ("No such filter: ''"), which
     // silently broke every render whenever this was the final segment.
     let mut tail_steps: Vec<String> = Vec::new();
+
+    // THE contract of this engine: the rendered output is exactly the
+    // arrangement, never a byte more. `adelay` + `amix` place clips in
+    // composition time correctly, but nothing downstream of them promises the
+    // stream ENDS where the arrangement does — an encoder's flush, a
+    // normalization filter's internal padding, or a source that decodes a
+    // fraction longer than its clip all leak audio past the final clip. This
+    // trim (mirrored by `-t` on the output, below) makes the timeline the
+    // single source of truth for the exported duration.
+    if duration > 0.0 {
+        tail_steps.push(format!("atrim=end={duration:.6}"));
+    }
+
     match normalize {
         NormalizeKind::None => {}
         NormalizeKind::Loudness => {
@@ -238,8 +302,6 @@ fn build_mix_command_inner(
     tail_steps.push("aformat=sample_fmts=fltp:channel_layouts=stereo".to_string());
 
     filters.push(format!("[{mix_label}]{}[out]", tail_steps.join(",")));
-
-    let duration = project.duration();
 
     Ok(MixCommand {
         args: args,
@@ -282,9 +344,13 @@ pub fn measure_mix_peak_db(project: &StudioProject) -> AppResult<f64> {
     let mut cmd = new_command(&ffmpeg);
     cmd.args(["-y", "-hide_banner", "-nostdin"]);
     cmd.args(&mix.args);
+    // Measure the graph's real output pad `[out]`. The previous form appended
+    // `,[mix]volumedetect[vd]` — a `,` where a `;` belongs, referencing a
+    // `[mix]` label that only exists for multi-track projects — so peak
+    // normalization failed outright on every single-track mix.
     cmd.args([
         "-filter_complex",
-        &format!("{},[mix]volumedetect[vd]", mix.filter_complex),
+        &format!("{};[out]volumedetect[vd]", mix.filter_complex),
     ]);
     cmd.args(["-map", "[vd]", "-f", "null", "-"]);
 
@@ -358,6 +424,12 @@ pub fn render_mix(
     cmd.args(["-filter_complex", &mix.filter_complex]);
     cmd.args(["-map", "[out]", "-vn"]);
     cmd.args(["-sn", "-dn"]);
+    // Second half of the exported-duration contract (see the `atrim` tail step
+    // in build_mix_command): the muxer is told the exact end too, so no
+    // encoder-flush tail can extend the file past the arrangement.
+    if mix.duration > 0.0 {
+        cmd.args(["-t", &format!("{:.6}", mix.duration)]);
+    }
 
     let br = if quality.bitrate_kbps == 0 { 320 } else { quality.bitrate_kbps };
     match quality.format.as_str() {
@@ -628,8 +700,19 @@ mod tests {
         let mix = build_mix_command_inner(&p, NormalizeKind::None, None, false).unwrap();
         assert_eq!(mix.clip_count, 2);
         let joined = mix.args.join(" ");
-        assert!(joined.contains("-ss 42.3 -i C:\\Music\\A.mp3"));
-        assert!(joined.contains("-ss 10 -i C:\\Music\\B.mp3"));
+        // Each source's seek and read bound must stay attached to the input
+        // they belong to — asserted as one contiguous run so a seek drifting
+        // onto the wrong `-i` still fails here. Clip A is 42.3→78.7 (36.4s),
+        // clip B is 10→40 (30s); each input is read for its clip's length plus
+        // the seek-imprecision epsilon.
+        assert!(
+            joined.contains(&format!("-ss 42.3 -t {:.6} -i C:\\Music\\A.mp3", 36.4 + INPUT_READ_EPSILON)),
+            "{joined}"
+        );
+        assert!(
+            joined.contains(&format!("-ss 10 -t {:.6} -i C:\\Music\\B.mp3", 30.0 + INPUT_READ_EPSILON)),
+            "{joined}"
+        );
     }
 
     #[test]
@@ -670,6 +753,7 @@ mod tests {
         });
         p.timeline.tracks.push(StudioTrack {
             id: "track-2".to_string(), name: "Track 2".to_string(), muted: false, solo: false,
+            volume: 1.0,
             items: vec![StudioTimelineItem {
                 clip_id: "c2".to_string(), position: 0.0, volume: 1.0, muted: false,
                 fade_in: 0.0, fade_out: 0.0, crossfade_prev: 0.0, trim_start: 0.0, trim_end: 0.0,
@@ -767,5 +851,127 @@ mod tests {
             let mix = build_mix_command_inner(&two, normalize, Some(-3.0), false).unwrap();
             assert!(!mix.filter_complex.contains("],"), "empty filter name bug (two clips, {normalize:?}): {}", mix.filter_complex);
         }
+
+        // Track gain on a single-item track — the branch that must NOT emit
+        // `[c0],volume=...`.
+        let mut gained = two_track_project();
+        gained.timeline.tracks[0].volume = 0.5;
+        let mix = build_mix_command_inner(&gained, NormalizeKind::None, None, false).unwrap();
+        assert!(!mix.filter_complex.contains("],"), "empty filter name bug (track gain): {}", mix.filter_complex);
+        assert!(mix.filter_complex.contains("volume=0.5"));
+    }
+
+    /// The exported file must be the arrangement and nothing else. Both halves
+    /// of that guarantee — the graph-side `atrim` and the muxer-side `-t` —
+    /// derive from the same `project.duration()`.
+    #[test]
+    fn graph_trims_output_to_the_composition_duration() {
+        let p = sample_project();
+        let mix = build_mix_command_inner(&p, NormalizeKind::None, None, false).unwrap();
+        assert!(
+            mix.filter_complex.contains(&format!("atrim=end={:.6}", p.duration())),
+            "missing composition-duration trim: {}",
+            mix.filter_complex
+        );
+        assert!((mix.duration - p.duration()).abs() < 1e-9);
+    }
+
+    /// A clip cut from deep inside an hour-long source must export as its own
+    /// short length: the declared duration is exactly "the last clip's end on
+    /// the timeline", never anything derived from the source's length.
+    #[test]
+    fn duration_ignores_source_length_entirely() {
+        let mut p = StudioProject::new("Sparse".to_string());
+        p.sources.push(StudioSource {
+            id: "s1".to_string(), path: r"C:\Music\A.mp3".to_string(), name: "A".to_string(),
+            duration: 3600.0, sample_rate: Some(44100), channels: Some(2), bpm: None, markers: vec![],
+        });
+        p.clips.push(StudioClip { id: "c1".to_string(), source_id: "s1".to_string(), name: "A".to_string(), start: 100.0, end: 120.0 });
+        p.timeline.tracks[0].items.push(StudioTimelineItem {
+            clip_id: "c1".to_string(), position: 5.0, volume: 1.0, muted: false,
+            fade_in: 0.0, fade_out: 0.0, crossfade_prev: 0.0, trim_start: 0.0, trim_end: 0.0,
+        });
+        assert!((p.duration() - 25.0).abs() < 1e-9, "got {}", p.duration());
+        let mix = build_mix_command_inner(&p, NormalizeKind::None, None, false).unwrap();
+        assert!((mix.duration - 25.0).abs() < 1e-9);
+        assert!(mix.filter_complex.contains("atrim=end=25.000000"));
+    }
+
+    /// Non-destructive trim must move BOTH the read position in the source and
+    /// the rendered length — a trimmed clip that still seeks to the untrimmed
+    /// start would silently export the wrong audio.
+    #[test]
+    fn trim_shifts_seek_and_shortens_output() {
+        let mut p = StudioProject::new("Trimmed".to_string());
+        p.sources.push(StudioSource {
+            id: "s1".to_string(), path: r"C:\Music\A.mp3".to_string(), name: "A".to_string(),
+            duration: 300.0, sample_rate: Some(44100), channels: Some(2), bpm: None, markers: vec![],
+        });
+        p.clips.push(StudioClip { id: "c1".to_string(), source_id: "s1".to_string(), name: "A".to_string(), start: 10.0, end: 40.0 });
+        p.timeline.tracks[0].items.push(StudioTimelineItem {
+            clip_id: "c1".to_string(), position: 0.0, volume: 1.0, muted: false,
+            fade_in: 0.0, fade_out: 0.0, crossfade_prev: 0.0, trim_start: 4.0, trim_end: 6.0,
+        });
+        let mix = build_mix_command_inner(&p, NormalizeKind::None, None, false).unwrap();
+        assert!(mix.args.join(" ").contains("-ss 14"), "seek must include trimStart: {:?}", mix.args);
+        assert!(mix.filter_complex.contains("atrim=end=20.000000"), "{}", mix.filter_complex);
+        assert!((mix.duration - 20.0).abs() < 1e-9);
+    }
+
+    /// The duration contract must be measured against the clips that actually
+    /// reach the graph, not every item in the project. A muted track holding
+    /// the arrangement's furthest-right clip used to set both the `atrim` tail
+    /// and the output `-t` past the last audible sample — bounding nothing —
+    /// and reported that unreachable end back to the UI as the export length.
+    #[test]
+    fn duration_ignores_clips_on_muted_tracks() {
+        let mut p = two_track_project();
+        // Track 2's clip is the furthest right (ends at 30s) but is muted, so
+        // the real composition ends with track 1's clip, at 2s.
+        p.timeline.tracks[1].items[0].position = 28.0;
+        p.timeline.tracks[1].muted = true;
+        assert!(
+            (p.duration() - 30.0).abs() < 1e-9,
+            "precondition: the project-wide duration still counts the muted clip"
+        );
+        let mix = build_mix_command_inner(&p, NormalizeKind::None, None, false).unwrap();
+        assert_eq!(mix.clip_count, 1);
+        assert!((mix.duration - 2.0).abs() < 1e-9, "got {}", mix.duration);
+        assert!(mix.filter_complex.contains("atrim=end=2.000000"), "{}", mix.filter_complex);
+    }
+
+    /// Same guarantee for solo, which excludes tracks by the opposite rule.
+    #[test]
+    fn duration_ignores_clips_silenced_by_solo() {
+        let mut p = two_track_project();
+        p.timeline.tracks[1].items[0].position = 28.0;
+        p.timeline.tracks[0].solo = true; // silences track 2
+        let mix = build_mix_command_inner(&p, NormalizeKind::None, None, false).unwrap();
+        assert_eq!(mix.clip_count, 1);
+        assert!((mix.duration - 2.0).abs() < 1e-9, "got {}", mix.duration);
+    }
+
+    /// Each input must stop being read once its clip's content has been taken,
+    /// so a short clip from a long song does not decode the whole song.
+    #[test]
+    fn each_input_is_read_only_for_its_clip_length() {
+        let mut p = StudioProject::new("Sparse".to_string());
+        p.sources.push(StudioSource {
+            id: "s1".to_string(), path: r"C:\Music\A.mp3".to_string(), name: "A".to_string(),
+            duration: 3600.0, sample_rate: Some(44100), channels: Some(2), bpm: None, markers: vec![],
+        });
+        p.clips.push(StudioClip { id: "c1".to_string(), source_id: "s1".to_string(), name: "A".to_string(), start: 100.0, end: 120.0 });
+        p.timeline.tracks[0].items.push(StudioTimelineItem {
+            clip_id: "c1".to_string(), position: 0.0, volume: 1.0, muted: false,
+            fade_in: 0.0, fade_out: 0.0, crossfade_prev: 0.0, trim_start: 0.0, trim_end: 0.0,
+        });
+        let mix = build_mix_command_inner(&p, NormalizeKind::None, None, false).unwrap();
+        // -ss and -t are INPUT options: both must precede the -i they bound.
+        let joined = mix.args.join(" ");
+        let expected = format!("-ss 100 -t {:.6} -i", 20.0 + INPUT_READ_EPSILON);
+        assert!(joined.contains(&expected), "expected `{expected}` in {joined}");
+        // The read bound stays looser than the graph's cut, so an imprecise
+        // container seek can never shorten the clip.
+        assert!(mix.filter_complex.contains("atrim=end=20.000000"), "{}", mix.filter_complex);
     }
 }

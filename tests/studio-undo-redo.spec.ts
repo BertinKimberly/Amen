@@ -68,21 +68,37 @@ test.describe("Audio Studio — undo/redo of real editing operations", () => {
       await dragClipToTrack(page, "Clip 1", 0, 0.1);
 
       const item = page.locator('[data-testid="timeline-clip"]').first();
-      const before = await item.boundingBox();
+      const positionSeconds = () =>
+         item.evaluate((e: HTMLElement) => parseFloat(e.dataset.positionSeconds || "0"));
+      // Asserted in COMPOSITION seconds: moving a clip can extend the
+      // arrangement and scroll the lane, so before/after viewport pixels are
+      // measured in two different coordinate systems.
+      const beforeBox = await item.boundingBox();
+      const beforePosition = await positionSeconds();
 
-      await page.mouse.move(before!.x + before!.width / 2, before!.y + before!.height / 2);
+      // Grab near the clip's left edge, not its centre — at the composition-
+      // fitting zoom a clip can be most of the lane wide, and grabbing the
+      // centre then dragging to x+220 would push the pointer off the viewport.
+      const grabX = beforeBox!.x + Math.min(beforeBox!.width / 2, 40);
+      const grabY = beforeBox!.y + beforeBox!.height / 2;
+      await page.mouse.move(grabX, grabY);
       await page.mouse.down();
-      await page.mouse.move(before!.x + 220, before!.y + before!.height / 2, { steps: 10 });
+      await page.mouse.move(grabX + 220, grabY, { steps: 10 });
       await page.waitForTimeout(50);
       await page.mouse.up();
       await page.waitForTimeout(150);
 
-      const moved = await item.boundingBox();
-      expect(moved!.x).toBeGreaterThan(before!.x + 80);
+      const movedPosition = await positionSeconds();
+      expect(movedPosition, "the clip must have moved later in the composition").toBeGreaterThan(
+         beforePosition + 0.5,
+      );
 
       await undo(page);
-      const reverted = await item.boundingBox();
-      expect(reverted!.x, "undo must restore the clip's original timeline position").toBeCloseTo(before!.x, 0);
+      await page.waitForTimeout(100);
+      expect(
+         await positionSeconds(),
+         "undo must restore the clip's original timeline position",
+      ).toBeCloseTo(beforePosition, 3);
    });
 
    test("deleting a placed clip: undo restores it to the timeline", async ({ page }) => {
@@ -112,8 +128,14 @@ test.describe("Audio Studio — undo/redo of real editing operations", () => {
       await page.waitForTimeout(100);
 
       const item = page.locator('[data-testid="timeline-clip"]').first();
-      const before = await item.boundingBox();
       const handle = item.locator('[data-testid="trim-handle-right"]');
+      // Zooming in twice makes this clip wider than the lane, so its right
+      // edge sits outside the scroll viewport. A real user scrolls to reach
+      // the handle; without this the drag targets a coordinate off-screen and
+      // simply never touches the clip, which read as "trim is broken".
+      await handle.scrollIntoViewIfNeeded();
+      await page.waitForTimeout(100);
+      const before = await item.boundingBox();
       const handleBox = await handle.boundingBox();
 
       await page.mouse.move(handleBox!.x + handleBox!.width / 2, handleBox!.y + handleBox!.height / 2);

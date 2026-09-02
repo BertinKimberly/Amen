@@ -28,13 +28,19 @@
       "csp": null,
       "assetProtocol": {
         "enable": true,
-        "scope": ["$HOME/**", "$APPDATA/**", "$LOCALAPPDATA/**"]
+        "scope": [
+          "$HOME/**",
+          "$APPDATA/**",
+          "$LOCALAPPDATA/**"
+        ]
       }
     }
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "category": "Utility",
     "shortDescription": "Local media downloader powered by yt-dlp + FFmpeg",
     "longDescription": "Amen downloads media from supported URLs and converts to MP3/MP4 locally using yt-dlp and FFmpeg. Offline-first, no cloud services.",
@@ -49,7 +55,19 @@
       "nsis": {
         "installMode": "currentUser",
         "displayLanguageSelector": false,
-        "languages": ["English"]
+        "languages": [
+          "English"
+        ]
+      }
+    },
+    "linux": {
+      "deb": {
+        "depends": [
+          "ffmpeg"
+        ]
+      },
+      "appimage": {
+        "bundleMediaFramework": false
       }
     }
   }

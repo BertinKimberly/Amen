@@ -98,7 +98,7 @@ test.describe("Audio Studio — error handling & data integrity", () => {
       await startInput.press("Enter");
       await page.waitForTimeout(150);
 
-      const durationText = await page.locator("text=Duration").locator("..").locator("div").last().textContent();
+      const durationText = await page.locator(String.raw`[data-testid="selection-duration"]`).textContent();
       // Duration must never go to zero or negative — the input must clamp
       // Start to just under End rather than silently producing an inverted
       // or nonsensical selection.
