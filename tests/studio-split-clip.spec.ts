@@ -44,7 +44,15 @@ test.describe("Audio Studio — split clip at playhead", () => {
       await page.waitForTimeout(150);
 
       const item = page.locator('[data-testid="timeline-clip"]').first();
-      const before = await item.boundingBox();
+      // Captured in COMPOSITION seconds, not viewport pixels. Splitting changes
+      // the arrangement and can scroll the lane, so a before/after comparison
+      // of boundingBox().x compares two different coordinate systems — that is
+      // what produced the nonsensical "expected -42.65" (the clip's left edge
+      // measured while scrolled off the left of the viewport).
+      const before = await item.evaluate((e: HTMLElement) => ({
+         position: parseFloat(e.dataset.positionSeconds || "0"),
+         duration: parseFloat(e.dataset.durationSeconds || "0"),
+      }));
       await item.click();
 
       // Seek to roughly the middle of the placed item via the transport seek bar.
@@ -66,28 +74,45 @@ test.describe("Audio Studio — split clip at playhead", () => {
       const pieces = page.locator('[data-testid="timeline-clip"]');
       await expect(pieces).toHaveCount(2);
 
-      const first = await pieces.nth(0).boundingBox();
-      const second = await pieces.nth(1).boundingBox();
-      // The two pieces must be adjacent (no gap, no overlap) and together
-      // span exactly the original item's width.
-      expect(first!.x, "first piece must start where the original clip started").toBeCloseTo(before!.x, 0);
-      expect(first!.x + first!.width, "pieces must be adjacent with no gap/overlap").toBeCloseTo(second!.x, 0);
-      expect(first!.width + second!.width, "the two pieces together must preserve the original total width").toBeCloseTo(before!.width, 0);
+      const spans = await pieces.evaluateAll((els: Element[]) =>
+         els
+            .map((e) => ({
+               position: parseFloat((e as HTMLElement).dataset.positionSeconds || "0"),
+               duration: parseFloat((e as HTMLElement).dataset.durationSeconds || "0"),
+            }))
+            .sort((a, b) => a.position - b.position),
+      );
+      const [first, second] = spans;
+      // The two pieces must start where the original did, be adjacent with no
+      // gap or overlap, and together preserve the original duration exactly.
+      expect(first.position, "first piece must start where the original clip started").toBeCloseTo(before.position, 3);
+      expect(first.position + first.duration, "pieces must be adjacent with no gap/overlap").toBeCloseTo(second.position, 3);
+      expect(
+         first.duration + second.duration,
+         "the two pieces together must preserve the original total duration",
+      ).toBeCloseTo(before.duration, 3);
 
       // Both pieces must reference the same source clip and remain independently manipulable.
       await pieces.nth(1).click();
-      const secondBefore = await pieces.nth(1).boundingBox();
+      const durationOf = (i: number) =>
+         pieces.nth(i).evaluate((e: HTMLElement) => parseFloat(e.dataset.durationSeconds || "0"));
+      const secondBefore = await durationOf(1);
       const handle = pieces.nth(1).locator('[data-testid="trim-handle-right"]');
+      // This test zooms in twice, so the second piece's right edge lies outside
+      // the scroll viewport; a real user scrolls to it before grabbing.
+      await handle.scrollIntoViewIfNeeded();
+      await page.waitForTimeout(100);
       const handleBox = await handle.boundingBox();
       await page.mouse.move(handleBox!.x + handleBox!.width / 2, handleBox!.y + handleBox!.height / 2);
       await page.mouse.down();
       await page.mouse.move(handleBox!.x - 20, handleBox!.y + handleBox!.height / 2, { steps: 6 });
       await page.mouse.up();
       await page.waitForTimeout(150);
-      const secondAfter = await pieces.nth(1).boundingBox();
-      expect(secondAfter!.width, "trimming the second piece must not affect the first").toBeLessThan(secondBefore!.width);
-      const firstUnchanged = await pieces.nth(0).boundingBox();
-      expect(firstUnchanged!.width).toBeCloseTo(first!.width, 0);
+      expect(await durationOf(1), "trimming the second piece must shorten it").toBeLessThan(secondBefore);
+      expect(
+         await durationOf(0),
+         "trimming the second piece must not affect the first",
+      ).toBeCloseTo(first.duration, 3);
    });
 
    test("undo restores the single clip after a split", async ({ page }) => {

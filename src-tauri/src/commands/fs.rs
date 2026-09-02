@@ -49,17 +49,31 @@ pub fn reveal_in_folder(app: tauri::AppHandle, path: String) -> AppResult<()> {
     match app.opener().reveal_item_in_dir(&path) {
         Ok(_) => Ok(()),
         Err(e) => {
-            // Try explicit explorer.exe /select,"path"
-            if let Ok(mut cmd) = std::process::Command::new("explorer.exe")
-                .arg("/select,")
-                .arg(&path)
-                .spawn()
+            #[cfg(windows)]
             {
-                let _ = cmd.wait();
-                Ok(())
-            } else {
-                Err(to_app_error(e))
+                // Try explicit explorer.exe /select,"path"
+                if let Ok(mut cmd) = std::process::Command::new("explorer.exe")
+                    .arg("/select,")
+                    .arg(&path)
+                    .spawn()
+                {
+                    let _ = cmd.wait();
+                    return Ok(());
+                }
             }
+            #[cfg(not(windows))]
+            {
+                // No portable "select this file" on Linux desktops, so open the
+                // containing directory — the file manager lands the user in the
+                // right place, which is the point of the gesture.
+                if let Some(dir) = p.parent() {
+                    if let Ok(mut cmd) = std::process::Command::new("xdg-open").arg(dir).spawn() {
+                        let _ = cmd.wait();
+                        return Ok(());
+                    }
+                }
+            }
+            Err(to_app_error(e))
         }
     }
 }

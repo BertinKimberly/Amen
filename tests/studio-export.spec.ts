@@ -41,27 +41,22 @@ test.describe("Audio Studio — export produces a correct, real audio file", () 
       await page.getByRole("button", { name: "Create Clip", exact: true }).click();
       await page.waitForTimeout(150);
 
-      // Read the ACTUAL clip duration the app recorded, rather than assuming
-      // the waveform-selection fraction maps exactly to a time span.
-      const clipDurationText = await page.locator('[data-testid="clip-item"]').first().locator("text=/\\(\\d+:\\d+\\.\\d+\\)/").textContent();
-      const m = clipDurationText!.match(/\((\d+):(\d+\.\d+)\)/);
-      let expectedDuration = parseInt(m![1]) * 60 + parseFloat(m![2]);
-
       await dragClipToTrack(page, "Clip 1", 0, 0.02);
       await page.waitForTimeout(150);
 
-      // Read back the clip's ACTUAL rendered position (left px / scale) rather
-      // than assuming where the pointer drop landed — the track element's
-      // width is its full scrollable content width, not the visible viewport,
-      // so a fractional xFrac doesn't map to a predictable time offset.
+      // The composition's real endpoint, read from the timeline's published
+      // contract. This previously scraped a "(m:ss.mmm)" string out of the clip
+      // library and re-derived the position from `left` px ÷ scale; the library
+      // no longer renders that parenthesised form, so the locator waited for an
+      // element that will never exist and the test died on a 30s timeout rather
+      // than on anything to do with exporting.
       const placedItem = page.locator('[data-testid="timeline-clip"]').first();
-      const style = await placedItem.getAttribute("style");
-      const leftPx = parseFloat(style!.match(/left:\s*([\d.]+)px/)![1]);
-      const pxPerSecond = parseFloat(
-         (await page.locator('[data-testid="timeline-container"]').getAttribute("data-px-per-second")) || "60",
-      );
-      const actualPosition = leftPx / pxPerSecond;
-      expectedDuration += actualPosition;
+      const placed = await placedItem.evaluate((e: HTMLElement) => ({
+         position: parseFloat(e.dataset.positionSeconds || "0"),
+         duration: parseFloat(e.dataset.durationSeconds || "0"),
+      }));
+      expect(placed.duration, "the placed clip must have a real duration").toBeGreaterThan(0);
+      const expectedDuration = placed.position + placed.duration;
 
       const outPath = path.join(os.tmpdir(), `amen-e2e-export-${Date.now()}.wav`);
       await enableE2EMode(page);

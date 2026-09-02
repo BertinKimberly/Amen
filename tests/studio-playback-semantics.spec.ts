@@ -52,9 +52,12 @@ test.describe("Audio Studio — playback mode disambiguation", () => {
       await page.waitForTimeout(100);
 
       const clipRow = page.locator('[data-testid="clip-item"]').first();
-      const clipRowText = (await clipRow.textContent()) || "";
-      const bounds = clipRowText.match(/(\d+):(\d+\.\d+)\s*→\s*(\d+):(\d+\.\d+)/);
-      expect(bounds, "clip row must show its start/end").not.toBeNull();
+      // The row shows a compact length + in-point; its exact millisecond
+      // bounds are on the hover tooltip, which is where a user reads them too.
+      const boundsTitle =
+         (await clipRow.locator("[title*='→']").first().getAttribute("title")) || "";
+      const bounds = boundsTitle.match(/(\d+):(\d+\.\d+)\s*→\s*(\d+):(\d+\.\d+)/);
+      expect(bounds, `clip row must expose its start/end (got "${boundsTitle}")`).not.toBeNull();
       const clipStart = parseInt(bounds![1]) * 60 + parseFloat(bounds![2]);
       const clipEnd = parseInt(bounds![3]) * 60 + parseFloat(bounds![4]);
 

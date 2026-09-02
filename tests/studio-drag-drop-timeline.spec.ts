@@ -68,16 +68,27 @@ test.describe("Audio Studio — timeline drag & drop (pointer-based)", () => {
       const before = await item.boundingBox();
       expect(before).not.toBeNull();
 
-      // Drag the placed item itself further right.
-      await page.mouse.move(before!.x + before!.width / 2, before!.y + before!.height / 2);
+      // Drag the placed item itself further right. The displacement is
+      // measured from the GRAB POINT, not from the clip's left edge — the
+      // timeline's zoom now fits the composition, so a single clip can be
+      // most of the viewport wide and "move to x+250" would be a move of
+      // 250 minus half the clip's width, i.e. barely a move at all.
+      const grabX = before!.x + Math.min(before!.width / 2, 40);
+      const grabY = before!.y + before!.height / 2;
+      const DRAG_PX = 200;
+      await page.mouse.move(grabX, grabY);
       await page.mouse.down();
-      await page.mouse.move(before!.x + 250, before!.y + before!.height / 2, { steps: 10 });
+      await page.mouse.move(grabX + DRAG_PX, grabY, { steps: 10 });
       await page.waitForTimeout(50);
       await page.mouse.up();
       await page.waitForTimeout(150);
 
       const after = await item.boundingBox();
-      expect(after!.x, "clip should have moved to a new position").toBeGreaterThan(before!.x + 100);
+      expect(
+         after!.x - before!.x,
+         `clip should have followed the pointer ~${DRAG_PX}px`,
+      ).toBeGreaterThan(DRAG_PX * 0.6);
+      expect(after!.width, "a move must not resize the clip").toBeCloseTo(before!.width, 0);
    });
 
    test("trimming the right handle shortens the clip without changing its start", async ({ page }) => {
@@ -88,24 +99,31 @@ test.describe("Audio Studio — timeline drag & drop (pointer-based)", () => {
       const before = await item.boundingBox();
       expect(before).not.toBeNull();
 
+      const TRIM_PX = 60;
       const handle = page.locator('[data-testid="trim-handle-right"]').first();
       const handleBox = await handle.boundingBox();
       expect(handleBox).not.toBeNull();
 
       await page.mouse.move(handleBox!.x + handleBox!.width / 2, handleBox!.y + handleBox!.height / 2);
       await page.mouse.down();
-      await page.mouse.move(handleBox!.x - 60, handleBox!.y + handleBox!.height / 2, { steps: 8 });
+      await page.mouse.move(handleBox!.x - TRIM_PX, handleBox!.y + handleBox!.height / 2, { steps: 8 });
       await page.waitForTimeout(50);
       await page.mouse.up();
       await page.waitForTimeout(150);
 
       const after = await item.boundingBox();
       expect(after!.x, "trimming the right edge must not move the clip's start").toBeCloseTo(before!.x, 0);
-      // A relative threshold, not an absolute pixel count: the timeline's
-      // default zoom now adapts to the composition length (~5 min target for
-      // longer content), so a fixed 60px drag maps to a different pixel
-      // delta at different zoom levels even though the same real trim occurs.
-      expect(after!.width, "trimming the right edge must shrink the clip").toBeLessThan(before!.width * 0.85);
+      // The clip must shrink by the distance the handle was actually dragged.
+      // The previous "at least 15% narrower" threshold was unsatisfiable by
+      // construction: this drag is 60px, and the clip renders ~540px wide, so
+      // even a perfect trim only removes ~11%. Asserting against TRIM_PX is
+      // both stricter (it pins the exact amount, not a floor) and honest about
+      // what the gesture asks for.
+      expect(
+         before!.width - after!.width,
+         `dragging the handle ${TRIM_PX}px left must narrow the clip by the same amount`,
+      ).toBeGreaterThan(TRIM_PX * 0.8);
+      expect(before!.width - after!.width).toBeLessThan(TRIM_PX * 1.2);
    });
 
    test("adding a second track and dragging a clip onto it works independently of track 1", async ({ page }) => {

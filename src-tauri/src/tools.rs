@@ -56,20 +56,32 @@ pub struct DependencyReport {
     pub python: Option<String>,
 }
 
+/// The bundled-tool filename for this platform: `ffmpeg.exe` on Windows,
+/// plain `ffmpeg` everywhere else.
+pub fn tool_file_name(stem: &str) -> String {
+    format!("{stem}{}", std::env::consts::EXE_SUFFIX)
+}
+
 /// Search PATH for an executable.
 fn search_path(program: &str) -> Option<PathBuf> {
-    let exts: &[&str] = if program.contains('.') {
+    // Only Windows resolves a bare name through a list of extensions; on Unix
+    // the file is named exactly what you asked for and carries an exec bit.
+    let exts: &[&str] = if program.contains('.') || !cfg!(windows) {
         &[""]
     } else {
         &["", ".exe", ".cmd", ".bat", ".py"]
     };
-    if let Ok(paths) = std::env::var("PATH") {
-        for dir in paths.split(';') {
-            if dir.is_empty() {
+    if let Some(paths) = std::env::var_os("PATH") {
+        // `split_paths` uses the platform separator — ';' on Windows, ':' on
+        // Unix. Splitting on ';' unconditionally meant that on Linux the whole
+        // PATH was treated as one nonsensical directory and NOTHING was ever
+        // found, so every tool looked missing however it had been installed.
+        for dir in std::env::split_paths(&paths) {
+            if dir.as_os_str().is_empty() {
                 continue;
             }
             for ext in exts {
-                let candidate = Path::new(dir).join(format!("{program}{ext}"));
+                let candidate = dir.join(format!("{program}{ext}"));
                 if candidate.is_file() {
                     return Some(candidate);
                 }
@@ -86,7 +98,7 @@ pub fn resolve_ytdlp(settings: &AppSettings) -> Option<PathBuf> {
             return Some(p);
         }
     }
-    let bundled = config::tools_dir().join("yt-dlp.exe");
+    let bundled = config::tools_dir().join(tool_file_name("yt-dlp"));
     if bundled.is_file() {
         return Some(bundled);
     }
@@ -100,7 +112,7 @@ pub fn resolve_ffmpeg(settings: &AppSettings) -> Option<PathBuf> {
             return Some(p);
         }
     }
-    let bundled = config::tools_dir().join("ffmpeg.exe");
+    let bundled = config::tools_dir().join(tool_file_name("ffmpeg"));
     if bundled.is_file() {
         return Some(bundled);
     }
@@ -114,7 +126,7 @@ pub fn resolve_ffprobe(settings: &AppSettings) -> Option<PathBuf> {
             return Some(p);
         }
     }
-    let bundled = config::tools_dir().join("ffprobe.exe");
+    let bundled = config::tools_dir().join(tool_file_name("ffprobe"));
     if bundled.is_file() {
         return Some(bundled);
     }
@@ -189,6 +201,7 @@ fn check_dir_writable(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(windows)]
 pub fn free_disk_space(path: &Path) -> Option<u64> {
     use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
     let wide: Vec<u16> = path
@@ -207,6 +220,37 @@ pub fn free_disk_space(path: &Path) -> Option<u64> {
             None
         }
     }
+}
+
+/// Free space on the filesystem holding `path`, via the mounted-disk list.
+///
+/// Unix has no direct equivalent of `GetDiskFreeSpaceExW` in this crate's
+/// dependency set, so the filesystem is identified by the LONGEST mount point
+/// that is a prefix of the path — on Linux `/home` and `/` are both prefixes of
+/// `/home/user/x`, and only the longest one describes the right device.
+#[cfg(not(windows))]
+pub fn free_disk_space(path: &Path) -> Option<u64> {
+    use sysinfo::Disks;
+    // Resolve symlinks/.. so prefix matching compares real mount paths; fall
+    // back to the nearest existing ancestor for a directory not yet created.
+    let target = path
+        .canonicalize()
+        .or_else(|_| {
+            path.ancestors()
+                .find(|a| a.exists())
+                .map(|a| a.to_path_buf())
+                .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))
+                .and_then(|a| a.canonicalize())
+        })
+        .ok()?;
+
+    let disks = Disks::new_with_refreshed_list();
+    disks
+        .list()
+        .iter()
+        .filter(|d| target.starts_with(d.mount_point()))
+        .max_by_key(|d| d.mount_point().as_os_str().len())
+        .map(|d| d.available_space())
 }
 
 fn check_network() -> NetworkCheck {
@@ -373,9 +417,38 @@ fn source_label(settings: &AppSettings, exe: &Path, name: &str) -> String {
 
 // ---------- Installation ----------
 
+#[cfg(windows)]
 pub const YTDLP_DOWNLOAD_URL: &str =
     "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe";
+/// The official self-contained Linux build from the same release. Named
+/// `yt-dlp_linux` upstream; it is saved locally as plain `yt-dlp`.
+#[cfg(all(unix, not(target_os = "macos")))]
+pub const YTDLP_DOWNLOAD_URL: &str =
+    "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux";
+#[cfg(target_os = "macos")]
+pub const YTDLP_DOWNLOAD_URL: &str =
+    "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos";
+
+#[cfg(windows)]
 pub const FFMPEG_DOWNLOAD_URL: &str = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip";
+
+/// Give a freshly downloaded tool its exec bit. A no-op on Windows, where
+/// executability comes from the file extension rather than a mode bit.
+fn make_executable(path: &Path) -> AppResult<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(path)
+            .map_err(|e| AppError::io("Reading downloaded tool", e))?
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(path, perms)
+            .map_err(|e| AppError::io("Making the downloaded tool executable", e))?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
 
 fn http_download(
     url: &str,
@@ -427,7 +500,7 @@ pub fn install_dependencies(
 
     if what == "yt-dlp" || what == "all" {
         on_event("yt-dlp", None, "Downloading yt-dlp from the official GitHub releases…");
-        let tmp = tools.join("yt-dlp.exe.download");
+        let tmp = tools.join("yt-dlp.download");
         let _ = std::fs::remove_file(&tmp);
         http_download(YTDLP_DOWNLOAD_URL, &tmp, |done, total| {
             let pct = if total > 0 {
@@ -437,11 +510,31 @@ pub fn install_dependencies(
             };
             on_event("yt-dlp", pct, "Downloading yt-dlp…");
         })?;
-        std::fs::rename(&tmp, tools.join("yt-dlp.exe"))
+        let dest = tools.join(tool_file_name("yt-dlp"));
+        std::fs::rename(&tmp, &dest)
             .map_err(|e| AppError::io("Finalizing yt-dlp install", e))?;
+        // On Unix a downloaded file arrives without its exec bit, so without
+        // this the install "succeeds" and every later invocation fails.
+        make_executable(&dest)?;
         on_event("yt-dlp", Some(100), "yt-dlp installed");
     }
 
+    // FFmpeg ships as a prebuilt archive on Windows. On Linux it comes from the
+    // distribution instead (the .deb depends on it), so there is no archive to
+    // fetch — say so plainly rather than downloading a Windows .zip that could
+    // never run here.
+    #[cfg(not(windows))]
+    if what == "ffmpeg" {
+        return Err(AppError::with_detail(
+            "unsupported_platform",
+            "Install FFmpeg with your package manager.",
+            "On Linux, Amen uses the system FFmpeg. Install it with `sudo apt install ffmpeg` \
+             (Debian/Ubuntu) or your distribution's equivalent, then run this check again."
+                .to_string(),
+        ));
+    }
+
+    #[cfg(windows)]
     if what == "ffmpeg" || what == "all" {
         on_event("ffmpeg", None, "Downloading FFmpeg (official Windows build from gyan.dev)…");
         let zip_path = tools.join("ffmpeg.zip");
@@ -464,6 +557,9 @@ pub fn install_dependencies(
     Ok(detect_dependencies(&settings))
 }
 
+/// Unpacks the Windows FFmpeg release zip. Windows-only: the archive it reads
+/// contains PE binaries, and nothing calls this on other platforms.
+#[cfg(windows)]
 fn extract_ffmpeg(zip_path: &Path, tools: &Path) -> AppResult<()> {
     let file = std::fs::File::open(zip_path).map_err(|e| AppError::io("Opening FFmpeg archive", e))?;
     let mut archive =

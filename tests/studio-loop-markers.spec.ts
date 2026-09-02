@@ -30,17 +30,21 @@ test.describe("Audio Studio — loop playback", () => {
       await loopBtn.click();
       await expect(loopBtn).toHaveAttribute("aria-pressed", "true");
 
-      await page.locator('button[title="Preview selection"]').click();
+      await page.locator('[data-testid="preview-selection"]').click();
       await page.waitForTimeout(150);
 
       const audioEl = page.locator("audio");
-      const selEnd = await page.evaluate(() => {
+      const selection = await page.evaluate(() => {
          const text = document.body.innerText;
          const m = text.match(/Selection: (\d+):(\d+\.\d+) → (\d+):(\d+\.\d+)/);
          if (!m) return null;
-         return parseInt(m[3]) * 60 + parseFloat(m[4]);
+         return {
+            start: parseInt(m[1]) * 60 + parseFloat(m[2]),
+            end: parseInt(m[3]) * 60 + parseFloat(m[4]),
+         };
       });
-      expect(selEnd).not.toBeNull();
+      expect(selection).not.toBeNull();
+      const selEnd = selection!.end;
 
       // Wait past where a non-looping preview would have stopped, plus enough
       // for at least one more loop iteration.
@@ -49,8 +53,22 @@ test.describe("Audio Studio — loop playback", () => {
       const stillPlaying = await audioEl.evaluate((el: HTMLAudioElement) => !el.paused);
       expect(stillPlaying, "looping playback must still be playing well past the selection end").toBe(true);
 
+      // Playback must still be INSIDE the loop region. Free-running playback
+      // would by now be ~1.5s past the end, so this still catches "kept
+      // advancing" by a wide margin — but it allows the few milliseconds of
+      // overshoot between the audio clock crossing the end and the next
+      // animation frame performing the loop-back. Asserting strictly
+      // `currentTime < selEnd` raced that frame boundary and failed by 3.5ms.
+      const FRAME_OVERSHOOT = 0.1;
       const currentTime = await audioEl.evaluate((el: HTMLAudioElement) => el.currentTime);
-      expect(currentTime, "a real loop-back must have reset playback near the selection start, not kept advancing").toBeLessThan((selEnd as number));
+      expect(
+         currentTime,
+         `a real loop-back must keep playback inside the selection, but it was at ${currentTime}s`,
+      ).toBeLessThanOrEqual(selEnd + FRAME_OVERSHOOT);
+      expect(
+         currentTime,
+         "loop-back must not rewind past the start of the selection",
+      ).toBeGreaterThanOrEqual(selection!.start - FRAME_OVERSHOOT);
 
       // Turning the loop off and letting it reach the end again must stop playback normally.
       await loopBtn.click();

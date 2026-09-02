@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Play, Pause, SkipBack, Volume2, VolumeX, Zap } from "lucide-react";
 import { formatTime, clamp } from "../lib/studioTime";
 import { assetUrl } from "../lib/api";
@@ -20,8 +20,13 @@ interface PlayerBarProps {
    previewPath?: string | null;
    mode?: "source" | "timeline";
    sourcePlaybackPath?: string | null;
-   selectionStart?: number | null; // Loop-back target when `looping` is on
-   selectionEnd?: number | null; // For preview stopping (or looping back, if `looping` is on)
+   /**
+    * Hard playback bounds. Non-null ONLY while previewing a clip or an ad-hoc
+    * selection — never derived from the waveform selection, so plain source
+    * playback is never silently truncated by a selection the user left behind.
+    */
+   previewStart?: number | null;
+   previewEnd?: number | null;
    looping?: boolean;
 }
 
@@ -53,26 +58,64 @@ export function PlayerBar({
    previewPath,
    mode = "timeline",
    sourcePlaybackPath,
-   selectionStart = null,
-   selectionEnd = null,
+   previewStart = null,
+   previewEnd = null,
    looping = false,
 }: PlayerBarProps) {
    const audioRef = useRef<HTMLAudioElement>(null);
    const frameRef = useRef<number>();
+   /**
+    * The playhead the UI asked for, read by the load handler below. Kept in a
+    * ref (not a dep) so changing the requested position never re-runs the
+    * source-loading effect.
+    */
+   const pendingSeekRef = useRef(playhead);
+   pendingSeekRef.current = playhead;
+   /** True from the moment a new src is set until its metadata has loaded. */
+   const [srcReady, setSrcReady] = useState(false);
 
    const audioSrc = mode === "source" && sourcePlaybackPath
       ? assetUrl(sourcePlaybackPath)
       : previewPath;
 
+   // A brand-new src has no duration yet, and assigning `currentTime` before
+   // metadata arrives is silently discarded — which is exactly how "preview
+   // this clip" ended up playing the whole source from 0:00. Seek on
+   // loadedmetadata instead, to whatever position the store is asking for.
+   useEffect(() => {
+      const audio = audioRef.current;
+      if (!audio) return;
+      setSrcReady(false);
+      const onLoaded = () => {
+         const target = pendingSeekRef.current;
+         if (Number.isFinite(target) && target > 0) {
+            try {
+               audio.currentTime = target;
+            } catch {
+               /* a src that rejects the seek will simply start at 0 */
+            }
+         }
+         setSrcReady(true);
+      };
+      if (audio.readyState >= 1) {
+         onLoaded();
+         return;
+      }
+      audio.addEventListener("loadedmetadata", onLoaded);
+      return () => audio.removeEventListener("loadedmetadata", onLoaded);
+   }, [audioSrc]);
+
    useEffect(() => {
       const audio = audioRef.current;
       if (!audio) return;
       if (playing) {
-         audio.play().catch(console.error);
+         audio.play().catch(() => {
+            /* autoplay/decoding rejections are surfaced by the transport state, not a console dump */
+         });
       } else {
          audio.pause();
       }
-   }, [playing, audioSrc]);
+   }, [playing, audioSrc, srcReady]);
 
    useEffect(() => {
       const audio = audioRef.current;
@@ -82,56 +125,73 @@ export function PlayerBar({
       audio.playbackRate = playbackRate;
    }, [volume, muted, playbackRate]);
 
+   // THE clock. `audio.currentTime` is the only source of playback truth in
+   // the Studio: the waveform playhead, the timeline playhead, the time
+   // readout and auto-scroll all read the store value this loop writes, so
+   // none of them can invent a position of their own and drift.
    useEffect(() => {
-      if (playing && audioRef.current) {
-         const loop = () => {
-            const audio = audioRef.current;
-            if (audio && !audio.paused) {
-               const currentTime = audio.currentTime;
-               if (selectionEnd !== null && currentTime >= selectionEnd) {
-                  if (looping && selectionStart !== null) {
-                     // Real audio-clock loop-back — reset the actual <audio>
-                     // element's position, not a UI approximation, so the
-                     // next frame's currentTime read is already correct.
-                     audio.currentTime = selectionStart;
-                     onSeek?.(selectionStart);
-                     frameRef.current = requestAnimationFrame(loop);
-                     return;
-                  }
-                  onStop?.();
+      if (!playing) return;
+      const loop = () => {
+         const audio = audioRef.current;
+         if (audio && !audio.paused) {
+            const currentTime = audio.currentTime;
+            if (previewEnd !== null && currentTime >= previewEnd) {
+               if (looping && previewStart !== null) {
+                  // Real audio-clock loop-back — reset the actual <audio>
+                  // element's position, not a UI approximation, so the next
+                  // frame's currentTime read is already correct.
+                  audio.currentTime = previewStart;
+                  onSeek?.(previewStart);
+                  frameRef.current = requestAnimationFrame(loop);
                   return;
                }
-               onSeek?.(currentTime);
+               // Stop exactly at the region's end and leave the playhead
+               // there, rather than running on into the rest of the source.
+               audio.pause();
+               onSeek?.(previewEnd);
+               onPause?.();
+               return;
             }
-            frameRef.current = requestAnimationFrame(loop);
-         };
+            onSeek?.(currentTime);
+         }
          frameRef.current = requestAnimationFrame(loop);
-      }
+      };
+      frameRef.current = requestAnimationFrame(loop);
       return () => {
          if (frameRef.current) cancelAnimationFrame(frameRef.current);
       };
-   }, [playing, onSeek, selectionStart, selectionEnd, looping, onStop]);
+   }, [playing, onSeek, onPause, previewStart, previewEnd, looping]);
 
-   // Sync external seek (when paused or big difference)
+   // Sync an externally-driven seek (a click on the waveform/ruler, a preview
+   // starting) onto the element. The 0.25s tolerance is wide enough that the
+   // clock loop's own writes never bounce back as a seek, and tight enough
+   // that a real jump lands immediately.
    useEffect(() => {
       const audio = audioRef.current;
-      if (!audio) return;
-      if (Math.abs(audio.currentTime - playhead) > 0.5) {
-         audio.currentTime = playhead;
+      if (!audio || !srcReady) return;
+      if (Math.abs(audio.currentTime - playhead) > 0.25) {
+         try {
+            audio.currentTime = playhead;
+         } catch {
+            /* out-of-range seeks are clamped by the element */
+         }
       }
-   }, [playhead]);
+   }, [playhead, srcReady]);
 
-   // Keyboard shortcuts (but not while focused on text input)
+   // Scrub shortcuts. Play/pause, Home and End deliberately live in
+   // StudioView instead — it owns playback MODE, and two window listeners
+   // both toggling the transport is a coin-flip waiting to happen.
    useEffect(() => {
       const handleKeyDown = (e: KeyboardEvent) => {
-         if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+         if (
+            e.target instanceof HTMLInputElement ||
+            e.target instanceof HTMLTextAreaElement ||
+            e.target instanceof HTMLSelectElement
+         ) {
             return;
          }
-         if (e.code === "Space") {
-            e.preventDefault();
-            if (playing) onPause?.();
-            else onPlay?.();
-         } else if (e.code === "ArrowLeft") {
+         if (e.ctrlKey || e.metaKey || e.altKey) return;
+         if (e.code === "ArrowLeft") {
             e.preventDefault();
             const delta = e.shiftKey ? 0.5 : 5;
             onSeek?.(clamp(playhead - delta, 0, duration));
@@ -139,12 +199,6 @@ export function PlayerBar({
             e.preventDefault();
             const delta = e.shiftKey ? 0.5 : 5;
             onSeek?.(clamp(playhead + delta, 0, duration));
-         } else if (e.code === "Home") {
-            e.preventDefault();
-            onSeek?.(0);
-         } else if (e.code === "End") {
-            e.preventDefault();
-            onSeek?.(duration);
          } else if (/^Digit[0-9]$/.test(e.code)) {
             const digit = parseInt(e.code[5]);
             const pos = (digit / 10) * duration;
@@ -154,9 +208,17 @@ export function PlayerBar({
 
       window.addEventListener("keydown", handleKeyDown);
       return () => window.removeEventListener("keydown", handleKeyDown);
-   }, [playing, playhead, duration, onPlay, onPause, onSeek]);
+   }, [playhead, duration, onSeek]);
 
    const progressPct = duration > 0 ? Math.min(100, (playhead / duration) * 100) : 0;
+   // A preview region is drawn on the transport too, so "why did it stop
+   // there?" is answered before it is asked.
+   const regionLeftPct =
+      previewStart !== null && duration > 0 ? Math.max(0, Math.min(100, (previewStart / duration) * 100)) : null;
+   const regionWidthPct =
+      previewStart !== null && previewEnd !== null && duration > 0
+         ? Math.max(0.5, Math.min(100, ((previewEnd - previewStart) / duration) * 100))
+         : null;
 
    return (
       <div className="flex items-center gap-3 rounded-xl bg-studio-panel border border-studio-border px-3.5 py-2.5" title="Space=play/pause · ←/→=seek ±5s · Shift+←/→=±0.5s · Home/End=jump · 0-9=jump to %">
@@ -183,7 +245,14 @@ export function PlayerBar({
          {/* Seek slider with filled progress track */}
          <div className="relative flex-1 h-4 flex items-center group">
             <div className="absolute inset-x-0 h-1.5 rounded-full bg-studio-canvas overflow-hidden">
-               <div className="h-full bg-studio-accent rounded-full" style={{ width: `${progressPct}%` }} />
+               {regionLeftPct !== null && regionWidthPct !== null && (
+                  <div
+                     data-testid="transport-preview-region"
+                     className="absolute inset-y-0 bg-studio-snap/35"
+                     style={{ left: `${regionLeftPct}%`, width: `${regionWidthPct}%` }}
+                  />
+               )}
+               <div className="h-full bg-studio-accent rounded-full relative" style={{ width: `${progressPct}%` }} />
             </div>
             <input
                type="range"

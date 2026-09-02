@@ -79,7 +79,16 @@ pub struct StudioTrack {
     pub name: String,
     pub muted: bool,
     pub solo: bool,
+    /// Linear track gain (0.0 - 2.0), applied to the whole track's mix.
+    /// `#[serde(default = ...)]` so older .lms files (saved before track
+    /// volume existed) load at unity gain instead of silence.
+    #[serde(default = "unit_gain")]
+    pub volume: f64,
     pub items: Vec<StudioTimelineItem>,
+}
+
+fn unit_gain() -> f64 {
+    1.0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -156,6 +165,7 @@ impl StudioProject {
                     name: "Track 1".to_string(),
                     muted: false,
                     solo: false,
+                    volume: 1.0,
                     items: Vec::new(),
                 }],
             },

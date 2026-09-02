@@ -50,6 +50,7 @@ progress back to the UI.
 | Component                                  | Notes                                                  |
 | ------------------------------------------ | ------------------------------------------------------ |
 | Windows 10/11                              | WebView2 runtime (preinstalled on Windows 11)          |
+| Ubuntu 24.04+ / Debian 13+                 | WebKitGTK 4.1; installed automatically by the `.deb`   |
 | Node.js ≥ 20                               | Development only                                       |
 | Rust toolchain (stable) + MSVC Build Tools | Development only — required to compile the Tauri shell |
 | yt-dlp                                     | Required at runtime; auto-installable from Diagnostics |
@@ -154,6 +155,39 @@ npm run tauri:build
 The installer is written to `src-tauri/target/release/bundle/nsis/`
 (`Amen_0.1.0_x64-setup.exe`). It is a per-user NSIS installer and does not require
 admin rights.
+
+## Production build (Linux packages)
+
+Requires **Ubuntu 24.04+ / Debian 13+** — Tauri v2 needs WebKitGTK **4.1**, and
+Ubuntu 22.04 and older only ship 4.0. From Windows, build inside WSL:
+
+```bash
+wsl -d Ubuntu -u root -- bash /mnt/c/path/to/amen/scripts/build-linux.sh
+```
+
+`scripts/build-linux.sh` installs the toolchain, runs the Rust tests, builds, and
+copies the results into `dist-linux/`. To build natively on Linux, run the same
+script directly.
+
+The packages link against the glibc of the machine that builds them, so build on
+the **oldest** distribution you intend to support: a package built on 24.04 will
+not start on 22.04.
+
+### Installing
+
+```bash
+# Debian/Ubuntu — pulls in ffmpeg automatically
+sudo apt install ./Amen_0.2.0_amd64.deb
+
+# Or the portable AppImage, which needs no installation
+chmod +x Amen_0.2.0_amd64.AppImage
+./Amen_0.2.0_amd64.AppImage
+```
+
+The `.deb` declares `ffmpeg` as a dependency, so apt installs it for you. The
+AppImage does not, so install FFmpeg yourself if you use it:
+`sudo apt install ffmpeg`. In both cases yt-dlp is fetched on demand from the
+Diagnostics screen.
 
 ## yt-dlp & FFmpeg setup
 

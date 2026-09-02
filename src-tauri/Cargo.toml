@@ -28,8 +28,12 @@ regex = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 ureq = { version = "2", features = ["tls", "json"] }
-windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem"] }
 sysinfo = "0.32"
+
+# Win32 disk-space query — Windows only, so it must not be a dependency of the
+# Linux build, where the crate does not apply.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem"] }
 
 [profile.release]
 panic = "abort"

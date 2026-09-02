@@ -315,7 +315,7 @@ export function SettingsView() {
                            value={settings.cookiesFile}
                            onChange={(e) => update({ cookiesFile: e.target.value })}
                            spellCheck={false}
-                           placeholder="C:\\path\\to\\cookies.txt (leave empty to disable)"
+                           placeholder="Path to cookies.txt (leave empty to disable)"
                         />
                      </SettingRow>
                      <SettingRow

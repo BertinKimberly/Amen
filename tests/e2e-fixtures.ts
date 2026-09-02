@@ -120,9 +120,14 @@ export async function selectWaveformRegion(page: Page, fromFrac: number, toFrac:
 
 /**
  * Pointer-based drag of a clip-library card onto a timeline track, at a given
- * fractional X position along that track's width. Mirrors exactly what a real
- * user does: press, move in steps (so the app's move-threshold promotes it to
- * an active drag), release.
+ * fractional X position across the VISIBLE timeline viewport. Mirrors exactly
+ * what a real user does: press, move in steps (so the app's move-threshold
+ * promotes it to an active drag), release.
+ *
+ * The fraction is deliberately relative to the scroll container, not to the
+ * track element — a track spans the whole scrollable content width, so a
+ * fraction of THAT can land at a coordinate outside the window entirely,
+ * where no pointer event can be delivered.
  */
 export async function dragClipToTrack(
    page: Page,
@@ -132,13 +137,15 @@ export async function dragClipToTrack(
 ) {
    const clip = page.locator('[data-testid="clip-item"]', { hasText: clipName }).first();
    const track = page.locator('[data-testid="timeline-track"]').nth(trackIndex);
+   const container = page.locator('[data-testid="timeline-container"]');
    const clipBox = await clip.boundingBox();
    const trackBox = await track.boundingBox();
-   if (!clipBox || !trackBox) throw new Error("Clip or track not visible");
+   const containerBox = await container.boundingBox();
+   if (!clipBox || !trackBox || !containerBox) throw new Error("Clip or track not visible");
 
    const startX = clipBox.x + clipBox.width / 2;
    const startY = clipBox.y + clipBox.height / 2;
-   const endX = trackBox.x + trackBox.width * xFrac;
+   const endX = containerBox.x + containerBox.width * xFrac;
    const endY = trackBox.y + trackBox.height / 2;
 
    await page.mouse.move(startX, startY);
@@ -153,8 +160,104 @@ export async function dragClipToTrack(
       await page.waitForTimeout(15);
    }
    await page.waitForTimeout(50);
+   // The composition time the pointer is over AT THE MOMENT OF RELEASE, read
+   // from the lane's own origin and scale. This must be captured before the
+   // drop: placing a clip can extend the composition, which scrolls the
+   // viewport to reveal it, so any expectation re-derived from the timeline's
+   // POST-drop scrollLeft describes a coordinate system that did not exist
+   // when the user let go — that mismatch, not a placement bug, is what made
+   // this look like clips landing in the wrong place.
+   const dropTime = await page.evaluate((clientX) => {
+      const c = document.querySelector('[data-testid="timeline-container"]') as HTMLElement | null;
+      const lane = document.querySelector('[data-testid="timeline-track"]') as HTMLElement | null;
+      if (!c || !lane) return null;
+      const pps = parseFloat(c.dataset.pxPerSecond || "0");
+      if (!pps) return null;
+      return Math.max(0, (clientX - lane.getBoundingClientRect().left) / pps);
+   }, endX);
    await page.mouse.up();
    await page.waitForTimeout(100);
+   return { dropTime };
+}
+
+/**
+ * Read the timeline's live geometry straight from the DOM contract the
+ * component publishes (`data-px-per-second`, per-clip `data-position-seconds`).
+ * Tests assert on real seconds this way instead of re-deriving them from
+ * pixels, which would just re-implement the maths under test.
+ */
+export async function readTimelineState(page: Page): Promise<{
+   pxPerSecond: number;
+   visibleSeconds: number;
+   scrollLeft: number;
+   scrollWidth: number;
+   clientWidth: number;
+   rulerLabels: string[];
+   clips: { name: string; position: number; duration: number }[];
+   duration: number;
+}> {
+   return page.evaluate(() => {
+      const c = document.querySelector('[data-testid="timeline-container"]') as HTMLElement | null;
+      if (!c) throw new Error("Timeline container not present");
+      const durEl = document.querySelector('[data-testid="composition-summary"]') as HTMLElement | null;
+      return {
+         pxPerSecond: parseFloat(c.dataset.pxPerSecond || "0"),
+         visibleSeconds: parseFloat(c.dataset.visibleSeconds || "0"),
+         scrollLeft: c.scrollLeft,
+         scrollWidth: c.scrollWidth,
+         clientWidth: c.clientWidth,
+         rulerLabels: Array.from(
+            document.querySelectorAll('[data-testid="timeline-ruler"] span'),
+         ).map((e) => (e.textContent || "").trim()),
+         clips: Array.from(document.querySelectorAll('[data-testid="timeline-clip"]')).map((e) => {
+            const el = e as HTMLElement;
+            return {
+               name: el.dataset.clipName || "",
+               position: parseFloat(el.dataset.positionSeconds || "0"),
+               duration: parseFloat(el.dataset.durationSeconds || "0"),
+            };
+         }),
+         duration: parseFloat(durEl?.dataset.compositionDuration || "0"),
+      };
+   });
+}
+
+/** Append a library clip to the end of the active track, via its real button. */
+export async function appendClipToTimeline(page: Page, clipName: string) {
+   const row = page.locator('[data-testid="clip-item"]', { hasText: clipName }).first();
+   await row.hover();
+   await row.locator('[data-testid="clip-append-button"]').click();
+   await page.waitForTimeout(120);
+}
+
+/**
+ * Create a clip with EXACT bounds: drag a rough region so the selection
+ * controls appear, then type precise Start/End values. Returns the requested
+ * duration so callers can assert against it.
+ */
+export async function createPreciseClip(page: Page, startSec: number, endSec: number): Promise<number> {
+   const fmt = (s: number) => {
+      const m = Math.floor(s / 60);
+      const sec = Math.floor(s % 60);
+      const ms = Math.round((s % 1) * 1000);
+      return `${m}:${String(sec).padStart(2, "0")}.${String(ms).padStart(3, "0")}`;
+   };
+   await selectWaveformRegion(page, 0.2, 0.3);
+   const startInput = page.locator('input[placeholder="00:00.000"]').nth(0);
+   const endInput = page.locator('input[placeholder="00:00.000"]').nth(1);
+   // End first, then start, then end again: each field clamps against the
+   // other, so a single pass can be silently rejected when the new range
+   // doesn't overlap the old one.
+   await endInput.fill(fmt(endSec));
+   await endInput.press("Enter");
+   await startInput.fill(fmt(startSec));
+   await startInput.press("Enter");
+   await endInput.fill(fmt(endSec));
+   await endInput.press("Enter");
+   await page.waitForTimeout(120);
+   await page.getByRole("button", { name: "Create Clip", exact: true }).click();
+   await page.waitForTimeout(150);
+   return endSec - startSec;
 }
 
 export const FIXTURES = {

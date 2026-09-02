@@ -71,18 +71,23 @@ test("acceptance: import 3 sources, clip each, arrange, trim, preview, play mix,
    await page.locator('[data-testid="timeline-zoom-in"]').click();
    await page.waitForTimeout(100);
    const firstClip = page.locator('[data-testid="timeline-clip"]').first();
-   const beforeTrim = await firstClip.boundingBox();
    const trimHandle = firstClip.locator('[data-testid="trim-handle-right"]');
+   // Two zoom-ins put the clip's right edge outside the scroll viewport, so the
+   // handle has to be scrolled to before it can be grabbed — otherwise the drag
+   // targets empty space and the "trim" silently does nothing.
+   await trimHandle.scrollIntoViewIfNeeded();
+   await page.waitForTimeout(100);
+   const clipDuration = () =>
+      firstClip.evaluate((e: HTMLElement) => parseFloat(e.dataset.durationSeconds || "0"));
+   const beforeTrim = await clipDuration();
    const handleBox = await trimHandle.boundingBox();
-   if (handleBox && beforeTrim) {
-      await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
-      await page.mouse.down();
-      await page.mouse.move(handleBox.x - 40, handleBox.y + handleBox.height / 2, { steps: 8 });
-      await page.mouse.up();
-      await page.waitForTimeout(150);
-   }
-   const afterTrim = await firstClip.boundingBox();
-   expect(afterTrim!.width, "trim must actually shrink the clip").toBeLessThan(beforeTrim!.width);
+   expect(handleBox, "the trim handle must be reachable after scrolling to it").not.toBeNull();
+   await page.mouse.move(handleBox!.x + handleBox!.width / 2, handleBox!.y + handleBox!.height / 2);
+   await page.mouse.down();
+   await page.mouse.move(handleBox!.x - 40, handleBox!.y + handleBox!.height / 2, { steps: 8 });
+   await page.mouse.up();
+   await page.waitForTimeout(150);
+   expect(await clipDuration(), "trim must actually shrink the clip").toBeLessThan(beforeTrim);
 
    // ---- Preview a clip from the library --------------------------------------
    await clips.first().click();

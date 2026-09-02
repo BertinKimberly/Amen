@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStudioStore } from "../stores/studio";
 import { WaveformView } from "../components/WaveformView";
 import { PlayerBar } from "../components/PlayerBar";
@@ -7,27 +7,48 @@ import { SourcePanel } from "../components/SourcePanel";
 import { ClipLibrary } from "../components/ClipLibrary";
 import { ExportDialog } from "../components/ExportDialog";
 import { TimeInput } from "../components/TimeInput";
-import { Plus, Save, RotateCcw, RotateCw, Download, Play, GripHorizontal, Repeat, Flag, X } from "lucide-react";
+import {
+   Plus,
+   Save,
+   RotateCcw,
+   RotateCw,
+   Download,
+   Play,
+   GripHorizontal,
+   Repeat,
+   Flag,
+   X,
+   CornerDownRight,
+   AlertTriangle,
+} from "lucide-react";
 import { save, open } from "../lib/dialog";
-import { formatTime } from "../lib/studioTime";
-import { computeTimelineDuration } from "../lib/studioTypes";
+import { formatTime, formatClock, formatDuration } from "../lib/studioTime";
+import { computeCompositionStats } from "../lib/studioTypes";
 import { appAlert, appConfirm } from "../stores/uiDialog";
 import { UiDialogHost } from "../components/UiDialogHost";
 
-const TIMELINE_HEIGHT_KEY = "amen.studio.timelineHeight";
-const DEFAULT_TIMELINE_HEIGHT = 400;
-const MIN_TIMELINE_HEIGHT = 220;
-const MAX_TIMELINE_HEIGHT = 720;
-// However tall the user drags it, everything ABOVE the timeline — the
-// scrollable waveform/selection area, the mode selector, and the transport
-// bar, plus the flex gaps between them — must keep enough room, or a
-// maximized-height timeline (or a persisted height from a previous, larger
-// window) can starve the rest of the workspace down to a sliver with no way
-// to see it. This reserve covers: waveform toolbar+canvas+help (~220) +
-// selection-controls row (~80) + mode row (~40) + transport bar (~56) + 3
-// flex gaps (~30). Deliberately generous — an oversized reserve just means a
-// slightly smaller default timeline, not a collapsed waveform.
-const MIN_NON_TIMELINE_HEIGHT = 430;
+const TIMELINE_FRACTION_KEY = "amen.studio.timelineFraction";
+/**
+ * The timeline gets the larger share of the workspace by default: it is where
+ * the mix is actually built, and the previous fixed-pixel height made it a
+ * strip at the bottom of a mostly-empty column on any large display.
+ * Stored as a FRACTION of the available column, so a layout tuned on a 1080p
+ * window still makes sense on a 1440p one instead of leaving a dead band.
+ */
+const DEFAULT_TIMELINE_FRACTION = 0.5;
+const MIN_TIMELINE_FRACTION = 0.25;
+const MAX_TIMELINE_FRACTION = 0.75;
+/**
+ * Absolute floors, so neither pane can ever be dragged into uselessness.
+ * `MIN_TOP_PX` covers everything above the handle: the source editor (whose
+ * waveform flexes down to ~56px of canvas) plus the mode row and transport
+ * bar, which must stay reachable without scrolling. It is sized so that the
+ * always-present Start/End/Create Clip row fits WITHOUT the pane scrolling on
+ * an ordinary laptop window — at 400 the waveform was squeezed to its bare
+ * floor and the pane scrolled on every size.
+ */
+const MIN_TIMELINE_PX = 240;
+const MIN_TOP_PX = 470;
 const RESIZE_HANDLE_HEIGHT = 12;
 
 export function StudioView() {
@@ -36,61 +57,60 @@ export function StudioView() {
    const [exporting, setExporting] = useState(false);
    const [dragActive, setDragActive] = useState(false);
    const centerColumnRef = useRef<HTMLDivElement>(null);
+   const [columnHeight, setColumnHeight] = useState(0);
 
-   // ---- Resizable timeline panel: the user decides how much of the ---------
-   // ---- workspace the timeline gets, like every serious editor does. -------
-   const [timelineHeight, setTimelineHeight] = useState<number>(() => {
-      const saved = Number(localStorage.getItem(TIMELINE_HEIGHT_KEY));
-      return Number.isFinite(saved) && saved >= MIN_TIMELINE_HEIGHT ? saved : DEFAULT_TIMELINE_HEIGHT;
+   // ---- Resizable timeline panel -------------------------------------------
+   const [timelineFraction, setTimelineFraction] = useState<number>(() => {
+      const saved = Number(localStorage.getItem(TIMELINE_FRACTION_KEY));
+      return Number.isFinite(saved) && saved >= MIN_TIMELINE_FRACTION && saved <= MAX_TIMELINE_FRACTION
+         ? saved
+         : DEFAULT_TIMELINE_FRACTION;
    });
-   const timelineHeightRef = useRef(timelineHeight);
-   timelineHeightRef.current = timelineHeight;
+   const fractionRef = useRef(timelineFraction);
+   fractionRef.current = timelineFraction;
 
-   const dynamicMaxHeight = useCallback(() => {
-      const available = centerColumnRef.current?.clientHeight ?? Infinity;
-      return Math.max(
-         MIN_TIMELINE_HEIGHT,
-         Math.min(MAX_TIMELINE_HEIGHT, available - MIN_NON_TIMELINE_HEIGHT - RESIZE_HANDLE_HEIGHT),
-      );
-   }, []);
-
-   // A height persisted from a previous, larger window (or dragged to the max
-   // on this one) must never be allowed to silently swallow the whole
-   // workspace on a smaller one. A plain mount-effect isn't enough here: on
-   // first render `store.project` is still null, so this component returns
-   // the loading/empty-state tree and `centerColumnRef` is never attached —
-   // an effect keyed on `[]` would fire against that, measure nothing, and
-   // never re-run once the real layout (and ref) exists. A ResizeObserver
-   // re-attaches whenever the ref appears and also re-clamps on live window
-   // resizes, which the "must respond intelligently to resize" requirement
-   // needs anyway.
+   // A plain mount effect isn't enough: on first render `store.project` is
+   // still null, so this component returns the loading tree and the ref is
+   // never attached. A ResizeObserver re-attaches whenever the real layout
+   // appears, and keeps the split honest through live window resizes.
    useEffect(() => {
       const el = centerColumnRef.current;
       if (!el) return;
-      const clamp = () => setTimelineHeight((h) => Math.min(h, dynamicMaxHeight()));
-      clamp();
-      const ro = new ResizeObserver(clamp);
+      const measure = () => setColumnHeight(el.clientHeight);
+      measure();
+      const ro = new ResizeObserver(measure);
       ro.observe(el);
       return () => ro.disconnect();
-   }, [store.project?.sources.length, dynamicMaxHeight]);
+   }, [store.project?.sources.length]);
+
+   /** Resolve the fraction into pixels, respecting both panes' absolute floors. */
+   const timelineHeight = useMemo(() => {
+      if (columnHeight <= 0) return MIN_TIMELINE_PX;
+      const usable = columnHeight - RESIZE_HANDLE_HEIGHT;
+      const maxTimeline = Math.max(MIN_TIMELINE_PX, usable - MIN_TOP_PX);
+      return Math.round(Math.min(maxTimeline, Math.max(MIN_TIMELINE_PX, usable * timelineFraction)));
+   }, [columnHeight, timelineFraction]);
 
    // Attaching listeners directly from the pointerdown handler (rather than
    // via a useEffect keyed on a ref) — refs don't trigger effects to re-run,
    // so a `[someRef.current]` dependency array silently never re-attaches.
-   const beginTimelineResize = useCallback((startY: number, startHeight: number) => {
-      const max = dynamicMaxHeight();
-      const handleMove = (e: PointerEvent) => {
-         const delta = startY - e.clientY; // dragging up grows the timeline
-         const next = Math.max(MIN_TIMELINE_HEIGHT, Math.min(max, startHeight + delta));
-         setTimelineHeight(next);
-      };
-      const handleUp = () => {
-         window.removeEventListener("pointermove", handleMove);
-         localStorage.setItem(TIMELINE_HEIGHT_KEY, String(timelineHeightRef.current));
-      };
-      window.addEventListener("pointermove", handleMove);
-      window.addEventListener("pointerup", handleUp, { once: true });
-   }, [dynamicMaxHeight]);
+   const beginTimelineResize = useCallback(
+      (startY: number, startHeight: number) => {
+         const usable = Math.max(1, columnHeight - RESIZE_HANDLE_HEIGHT);
+         const handleMove = (e: PointerEvent) => {
+            const delta = startY - e.clientY; // dragging up grows the timeline
+            const next = (startHeight + delta) / usable;
+            setTimelineFraction(Math.max(MIN_TIMELINE_FRACTION, Math.min(MAX_TIMELINE_FRACTION, next)));
+         };
+         const handleUp = () => {
+            window.removeEventListener("pointermove", handleMove);
+            localStorage.setItem(TIMELINE_FRACTION_KEY, String(fractionRef.current));
+         };
+         window.addEventListener("pointermove", handleMove);
+         window.addEventListener("pointerup", handleUp, { once: true });
+      },
+      [columnHeight],
+   );
 
    // ---- Pointer-based clip drag: library -> timeline ------------------------
    // HTML5 native drag/drop is unreliable inside the Tauri WebView (repeatedly
@@ -126,6 +146,7 @@ export function StudioView() {
          const active = dragClip;
          if (active && hover) {
             store.addItemToTimeline(active.clipId, hover.trackId, hover.position);
+            store.setSelectedTrack(hover.trackId);
          }
          dragHoverRef.current = null;
          setDragCandidate(null);
@@ -144,6 +165,18 @@ export function StudioView() {
       // promoted to an active drag, or ended) — NOT on every pointer move.
       // eslint-disable-next-line react-hooks/exhaustive-deps
    }, [dragCandidate?.clipId, dragClip?.clipId]);
+
+   /** The track new clips are appended to: whatever the user last touched, else the first. */
+   const activeTrackId =
+      store.selection.selectedTrackId ?? store.project?.timeline.tracks[0]?.id ?? null;
+
+   const appendClip = useCallback(
+      (clipId: string) => {
+         if (!activeTrackId) return;
+         store.appendItemToTrack(clipId, activeTrackId);
+      },
+      [store, activeTrackId],
+   );
 
    // Declare handlers first
    const handleNewProject = async () => {
@@ -259,6 +292,9 @@ export function StudioView() {
       }
    }, [store.project]);
 
+   const hasSelection =
+      store.selection.selectionStart !== null && store.selection.selectionEnd !== null;
+
    // Keyboard shortcuts for Studio
    useEffect(() => {
       const handleKeyDown = async (e: KeyboardEvent) => {
@@ -305,6 +341,24 @@ export function StudioView() {
                   store.selection.selectedItemIndex,
                   store.playback.playhead,
                );
+            }
+         }
+
+         // I / O: set the selection's in and out points at the playhead — the
+         // classic editor idiom, and the fastest way to turn "that bit sounded
+         // good" into a clip without aiming a drag.
+         else if ((e.key === "i" || e.key === "o") && !e.ctrlKey && !e.metaKey && !e.altKey) {
+            if (!store.selection.selectedSourceId) return;
+            e.preventDefault();
+            const t = store.playback.playhead;
+            if (e.key === "i") {
+               const end = store.selection.selectionEnd;
+               store.setSelectionStart(t);
+               if (end === null || end <= t) store.setSelectionEnd(t + 1);
+            } else {
+               const start = store.selection.selectionStart;
+               if (start === null || start >= t) store.setSelectionStart(Math.max(0, t - 1));
+               store.setSelectionEnd(t);
             }
          }
 
@@ -363,10 +417,14 @@ export function StudioView() {
             handleOpenProject();
          }
 
-         // Ctrl/Cmd + D: Duplicate selected clip
+         // Ctrl/Cmd + D: Duplicate — the selected timeline item if there is
+         // one (the thing actually on screen under the cursor), else the
+         // selected library clip.
          else if ((e.ctrlKey || e.metaKey) && e.key === "d") {
             e.preventDefault();
-            if (store.selection.selectedClipId) {
+            if (store.selection.selectedItemTrackId !== null && store.selection.selectedItemIndex !== null) {
+               store.duplicateItem(store.selection.selectedItemTrackId, store.selection.selectedItemIndex);
+            } else if (store.selection.selectedClipId) {
                store.duplicateClip(store.selection.selectedClipId);
             }
          }
@@ -382,7 +440,7 @@ export function StudioView() {
             e.preventDefault();
             const duration = store.playback.mode === "source" && store.selection.selectedSourceWaveform
                ? store.selection.selectedSourceWaveform.duration
-               : store.project ? computeTimelineDuration(store.project) : 0;
+               : store.project ? computeCompositionStats(store.project).duration : 0;
             store.seek(duration);
          }
       };
@@ -472,11 +530,16 @@ export function StudioView() {
       );
    }
 
-   // Single authoritative timeline-duration calculation (mirrors the Rust
-   // backend exactly, so the UI never diverges from what gets exported).
-   const projectDuration = computeTimelineDuration(store.project);
+   // Single authoritative composition figure (mirrors the Rust renderer's
+   // `project.duration()` exactly, so the UI never disagrees with the file
+   // that gets written).
+   const stats = computeCompositionStats(store.project);
+   const projectDuration = stats.duration;
+   const deadAir = stats.leadingSilence + stats.gapSilence;
+   // Worth pointing out only when it is a real share of the mix, not a
+   // rounding artefact of a deliberate breath between clips.
+   const showDeadAirWarning = projectDuration > 0 && deadAir > 1 && deadAir / projectDuration > 0.08;
 
-   // Calculate duration based on playback mode
    const currentSource = store.selection.selectedSourceId
       ? store.project.sources.find(s => s.id === store.selection.selectedSourceId)
       : undefined;
@@ -495,6 +558,8 @@ export function StudioView() {
          : store.playback.previewingClipId === "__selection__"
          ? { kind: "clip", label: "selection" }
          : { kind: "source", label: store.project.sources.find((s) => s.id === store.selection.selectedSourceId)?.name ?? "source" };
+
+   const hasTimelineContent = store.project.timeline.tracks.some((t) => t.items.length > 0);
 
    return (
       <div
@@ -531,6 +596,29 @@ export function StudioView() {
                      </span>
                   )}
                </div>
+            </div>
+
+            {/* The one number that answers "what am I about to export?" */}
+            <div
+               data-testid="composition-summary"
+               data-composition-duration={projectDuration}
+               className="flex items-center gap-2 text-[11px] text-studio-text-muted tabular-nums"
+            >
+               <span className="text-studio-text-faint uppercase tracking-wide">Mix</span>
+               <span className="text-studio-text font-mono text-[13px]">{formatClock(projectDuration)}</span>
+               <span className="text-studio-text-faint">
+                  {stats.itemCount} clip{stats.itemCount === 1 ? "" : "s"}
+               </span>
+               {showDeadAirWarning && (
+                  <span
+                     data-testid="dead-air-warning"
+                     className="flex items-center gap-1 rounded-md bg-studio-snap/15 text-studio-snap px-2 py-0.5"
+                     title="Silence in the arrangement is exported too. Use Close gaps on the timeline to remove it."
+                  >
+                     <AlertTriangle size={11} />
+                     {formatDuration(deadAir)} silence
+                  </span>
+               )}
             </div>
 
             <div className="flex items-center gap-1.5 ml-auto">
@@ -594,9 +682,10 @@ export function StudioView() {
 
          {/* Main workspace */}
          <div className="flex gap-2.5 flex-1 min-h-0 overflow-hidden">
-            {/* Left panel: sources & clip library */}
-            <div className="w-64 shrink-0 flex flex-col gap-2.5 overflow-y-auto">
-               <div className="bg-studio-panel rounded-xl p-3 border border-studio-border">
+            {/* Left rail: sources & clip library. Narrower on small windows so
+                the timeline keeps the space that matters. */}
+            <div className="w-56 xl:w-64 shrink-0 flex flex-col gap-2.5 min-h-0">
+               <div className="bg-studio-panel rounded-xl p-3 border border-studio-border shrink-0">
                   <SourcePanel
                      sources={store.project.sources}
                      selectedSourceId={store.selection.selectedSourceId}
@@ -620,6 +709,7 @@ export function StudioView() {
                      sources={store.project.sources}
                      selectedClipId={store.selection.selectedClipId}
                      previewingClipId={store.playback.previewingClipId}
+                     canCreateClip={hasSelection}
                      onCreateClipFromSelection={() =>
                         store.createClipFromSelection()
                      }
@@ -628,6 +718,7 @@ export function StudioView() {
                      onRenameClip={(id, name) => store.renameClip(id, name)}
                      onDeleteClip={(id) => store.deleteClip(id)}
                      onDuplicateClip={(id) => store.duplicateClip(id)}
+                     onAppendClip={appendClip}
                      draggingClipId={dragClip?.clipId ?? null}
                      onBeginDrag={(clipId, x, y) => {
                         const clip = store.project?.clips.find((c) => c.id === clipId);
@@ -637,14 +728,21 @@ export function StudioView() {
                </div>
             </div>
 
-            {/* Center: waveform editor (top) + resizable timeline (bottom) */}
-            <div ref={centerColumnRef} className="flex-1 flex flex-col min-w-0 overflow-hidden gap-2.5">
-               {/* Only the waveform/selection area scrolls if it doesn't fit —
-                   the transport below must always stay reachable without scrolling. */}
-               <div className="flex-1 min-h-0 flex flex-col gap-2.5 overflow-y-auto pr-0.5">
-                  {/* Waveform + selection (compact) */}
-                  {store.selection.selectedSourceWaveform && (
-                     <div className="space-y-2.5 shrink-0">
+            {/* Center: source editor (top) + resizable timeline (bottom) */}
+            <div ref={centerColumnRef} className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden gap-2.5">
+               {/* Source editor pane. `min-w-0` at every level and wrapping
+                   control rows — a fixed-width control row inside a flex child
+                   is what used to push the whole column into horizontal
+                   overflow and clip the waveform off the left edge. The
+                   waveform itself FLEXES rather than the pane scrolling, so
+                   the one surface you have to be able to see and aim at is
+                   never the thing that gets pushed off screen. */}
+               <div
+                  data-testid="source-editor-pane"
+                  className="flex-1 min-h-0 min-w-0 flex flex-col gap-2.5 overflow-y-auto overflow-x-hidden"
+               >
+                  {store.selection.selectedSourceWaveform ? (
+                     <>
                         <WaveformView
                            key={store.selection.selectedSourceId}
                            waveform={store.selection.selectedSourceWaveform}
@@ -657,85 +755,129 @@ export function StudioView() {
                            }}
                            onSeek={(time) => store.seek(time)}
                            playhead={store.playback.playhead}
+                           playing={store.playback.playing && store.playback.mode === "source"}
                            markers={currentSource?.markers}
                         />
 
                         {/* Markers — cue-point style bookmarks for navigating this source */}
-                        <div className="flex items-center gap-2 flex-wrap bg-studio-panel px-3 py-2 rounded-xl border border-studio-border">
+                        <div className="flex items-center gap-2 bg-studio-panel px-3 py-2 rounded-xl border border-studio-border min-w-0 shrink-0 overflow-x-auto">
                            <button
                               onClick={() => currentSource && store.addMarker(currentSource.id, store.playback.playhead)}
-                              className="flex items-center gap-1.5 rounded-md bg-studio-raised hover:bg-white/10 border border-studio-border px-2.5 py-1 text-[11px] font-medium text-studio-text transition"
+                              className="flex items-center gap-1.5 rounded-md bg-studio-raised hover:bg-white/10 border border-studio-border px-2.5 py-1 text-[11px] font-medium text-studio-text transition shrink-0"
                               title="Add a marker at the current playhead (M)"
                            >
                               <Flag size={12} />
                               Add Marker
                            </button>
                            {currentSource && currentSource.markers.length > 0 ? (
-                              currentSource.markers.map((m) => (
-                                 <div
-                                    key={m.id}
-                                    data-testid="waveform-marker"
-                                    className="group flex items-center gap-1.5 rounded-md bg-studio-canvas border border-studio-border pl-2 pr-1 py-1 text-[11px] text-studio-text"
-                                 >
-                                    <button
-                                       onClick={() => store.seek(m.time)}
-                                       className="flex items-center gap-1.5 hover:text-studio-accent-strong transition"
-                                       title={`Jump to ${m.label}`}
+                              currentSource.markers.map((m, mi) => {
+                                 const next = currentSource.markers[mi + 1];
+                                 return (
+                                    <div
+                                       key={m.id}
+                                       data-testid="waveform-marker"
+                                       className="group flex items-center gap-1 rounded-md bg-studio-canvas border border-studio-border pl-2 pr-1 py-1 text-[11px] text-studio-text shrink-0"
                                     >
-                                       <span className="h-1.5 w-1.5 rounded-full bg-[#ffb454] shrink-0" />
-                                       <span className="font-mono tabular-nums">{formatTime(m.time)}</span>
-                                       <span className="text-studio-text-muted">{m.label}</span>
-                                    </button>
-                                    <button
-                                       onClick={() => currentSource && store.removeMarker(currentSource.id, m.id)}
-                                       className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-studio-danger/15 hover:text-studio-danger transition"
-                                       title="Remove marker"
-                                    >
-                                       <X size={10} />
-                                    </button>
-                                 </div>
-                              ))
+                                       <button
+                                          onClick={() => store.seek(m.time)}
+                                          className="flex items-center gap-1.5 hover:text-studio-accent-strong transition"
+                                          title={`Jump to ${m.label}`}
+                                       >
+                                          <span className="h-1.5 w-1.5 rounded-full bg-[#ffb454] shrink-0" />
+                                          <span className="font-mono tabular-nums">{formatTime(m.time)}</span>
+                                          <span className="text-studio-text-muted">{m.label}</span>
+                                       </button>
+                                       {/* Marker -> selection: the point of bookmarking a
+                                           moment is to cut a clip from it a minute later. */}
+                                       <button
+                                          onClick={() => {
+                                             const end = next
+                                                ? next.time
+                                                : Math.min(currentSource.duration, m.time + 30);
+                                             if (end <= m.time) return;
+                                             store.setSelectionStart(m.time);
+                                             store.setSelectionEnd(end);
+                                             store.seek(m.time);
+                                          }}
+                                          data-testid="marker-to-selection"
+                                          className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-studio-accent/20 hover:text-studio-accent-strong transition"
+                                          title={next ? "Select from here to the next marker" : "Select 30s from here"}
+                                       >
+                                          <CornerDownRight size={10} />
+                                       </button>
+                                       <button
+                                          onClick={() => currentSource && store.removeMarker(currentSource.id, m.id)}
+                                          className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-studio-danger/15 hover:text-studio-danger transition"
+                                          title="Remove marker"
+                                       >
+                                          <X size={10} />
+                                       </button>
+                                    </div>
+                                 );
+                              })
                            ) : (
-                              <span className="text-[11px] text-studio-text-faint">No markers yet — bookmark positions as you listen</span>
+                              <span className="text-[11px] text-studio-text-faint">No markers yet — bookmark positions as you listen (M)</span>
                            )}
                         </div>
 
-                        {/* Selection controls */}
-                        {store.selection.selectionStart !== null && store.selection.selectionEnd !== null && (
-                           <div className="flex items-center gap-4 bg-studio-panel p-3.5 rounded-xl border border-studio-border">
-                              <div className="flex gap-3 flex-1">
-                                 <TimeInput
-                                    label="Start"
-                                    value={store.selection.selectionStart}
-                                    onChange={(val) => {
-                                       const end = store.selection.selectionEnd ?? val + 1;
-                                       store.setSelectionStart(Math.min(val, end - 0.001));
-                                    }}
-                                    min={0}
-                                    max={store.selection.selectedSourceWaveform.duration}
-                                 />
-                                 <TimeInput
-                                    label="End"
-                                    value={store.selection.selectionEnd}
-                                    onChange={(val) => {
-                                       const start = store.selection.selectionStart ?? 0;
-                                       store.setSelectionEnd(Math.max(val, start + 0.001));
-                                    }}
-                                    min={0}
-                                    max={store.selection.selectedSourceWaveform.duration}
-                                 />
-                                 <div className="flex flex-col gap-1">
-                                    <label className="text-[11px] text-studio-text-muted font-medium">Duration</label>
-                                    <div className="px-3 py-1.5 bg-studio-canvas border border-studio-border rounded-md text-sm font-mono text-studio-text tabular-nums">
-                                       {formatTime(store.selection.selectionEnd - store.selection.selectionStart)}
-                                    </div>
+                        {/* Selection controls — ALWAYS mounted, never conditional.
+                            Mounting this panel only once a selection existed made
+                            the flex column steal height from the waveform at the
+                            exact moment the user was dragging across it: the canvas
+                            resized mid-gesture and the drag stopped tracking, so the
+                            very first selection on any source came out a fraction of
+                            its intended length. Reserving the space costs nothing and
+                            has the happy side effect that Start/End/Preview/Create
+                            Clip are visible before you need them, instead of
+                            appearing only after you have already guessed correctly. */}
+                        <div
+                           data-testid="selection-controls"
+                           aria-disabled={!hasSelection}
+                           className={`flex items-end gap-3 flex-wrap bg-studio-panel p-3 rounded-xl border border-studio-border min-w-0 shrink-0 transition-opacity ${
+                              hasSelection ? "" : "opacity-45"
+                           }`}
+                        >
+                              <TimeInput
+                                 label="Start"
+                                 className="w-32 shrink-0"
+                                 value={store.selection.selectionStart}
+                                 onChange={(val) => {
+                                    const end = store.selection.selectionEnd ?? val + 1;
+                                    store.setSelectionStart(Math.min(val, end - 0.001));
+                                 }}
+                                 min={0}
+                                 max={store.selection.selectedSourceWaveform.duration}
+                              />
+                              <TimeInput
+                                 label="End"
+                                 className="w-32 shrink-0"
+                                 value={store.selection.selectionEnd}
+                                 onChange={(val) => {
+                                    const start = store.selection.selectionStart ?? 0;
+                                    store.setSelectionEnd(Math.max(val, start + 0.001));
+                                 }}
+                                 min={0}
+                                 max={store.selection.selectedSourceWaveform.duration}
+                              />
+                              <div className="flex flex-col gap-1 shrink-0">
+                                 <label className="text-[11px] text-studio-text-muted font-medium">Duration</label>
+                                 <div
+                                    data-testid="selection-duration"
+                                    className="px-3 py-1.5 bg-studio-canvas border border-studio-border rounded-md text-sm font-mono text-studio-text tabular-nums w-28"
+                                 >
+                                    {hasSelection
+                                       ? formatTime(store.selection.selectionEnd! - store.selection.selectionStart!)
+                                       : formatTime(0)}
                                  </div>
                               </div>
-                              <div className="flex gap-2">
+
+                              <div className="flex gap-2 flex-wrap ml-auto">
                                  <button
                                     onClick={() => store.previewSelection()}
-                                    className="flex items-center gap-2 bg-studio-raised hover:bg-white/10 border border-studio-border px-3 py-2 rounded-lg font-medium transition text-[13px] text-studio-text"
-                                    title="Preview selection"
+                                    data-testid="preview-selection"
+                                    disabled={!hasSelection}
+                                    className="flex items-center gap-2 bg-studio-raised hover:bg-white/10 border border-studio-border px-3 py-2 rounded-lg font-medium transition text-[13px] text-studio-text disabled:opacity-40 disabled:hover:bg-studio-raised"
+                                    title={hasSelection ? "Play only the selected region" : "Drag across the waveform to select a region first"}
                                  >
                                     <Play size={14} />
                                     Preview
@@ -743,12 +885,13 @@ export function StudioView() {
                                  <button
                                     onClick={() => store.toggleLoop()}
                                     data-testid="loop-toggle"
+                                    disabled={!hasSelection}
                                     aria-pressed={store.playback.looping}
                                     className={`flex items-center gap-2 border px-3 py-2 rounded-lg font-medium transition text-[13px] ${
                                        store.playback.looping
                                           ? "bg-studio-snap/20 border-studio-snap/50 text-studio-snap"
                                           : "bg-studio-raised hover:bg-white/10 border-studio-border text-studio-text"
-                                    }`}
+                                    } disabled:opacity-40`}
                                     title="Loop the current selection during playback"
                                  >
                                     <Repeat size={14} />
@@ -756,117 +899,121 @@ export function StudioView() {
                                  </button>
                                  <button
                                     onClick={() => store.createClipFromSelection()}
-                                    className="flex items-center gap-2 bg-studio-accent hover:brightness-110 px-3.5 py-2 rounded-lg font-medium transition text-[13px] text-white shadow-sm shadow-studio-accent/30"
+                                    data-testid="create-clip"
+                                    disabled={!hasSelection}
+                                    title={hasSelection ? "Create a clip from the selected region" : "Drag across the waveform to select a region first"}
+                                    className="flex items-center gap-2 bg-studio-accent hover:brightness-110 px-3.5 py-2 rounded-lg font-medium transition text-[13px] text-white shadow-sm shadow-studio-accent/30 disabled:opacity-40 disabled:hover:brightness-100"
                                  >
                                     <Plus size={16} />
                                     Create Clip
                                  </button>
                               </div>
-                           </div>
-                        )}
+                        </div>
+                     </>
+                  ) : (
+                     <div className="flex-1 flex items-center justify-center text-center text-[13px] text-studio-text-faint bg-studio-panel rounded-xl border border-studio-border p-6">
+                        Pick a source on the left to see its waveform, then drag
+                        across it to select the part you want.
                      </div>
                   )}
                </div>
 
                {/* Transport / player bar — always visible, never scrolled away */}
-               <div className="space-y-2.5 shrink-0">
-                     <div className="flex items-center gap-2 text-[12px] bg-studio-panel px-3.5 py-2 rounded-xl border border-studio-border">
-                        <span className="text-studio-text-muted font-medium">Playback:</span>
-                        <button
-                           onClick={() => {
-                              if (store.selection.selectedSourceId) {
-                                 store.selectSource(store.selection.selectedSourceId);
-                              }
-                           }}
-                           className={`px-2.5 py-1 rounded-md font-medium transition ${
-                              store.playback.mode === "source"
-                                 ? "bg-studio-accent text-white shadow-sm"
-                                 : "bg-studio-raised text-studio-text-muted hover:text-studio-text"
-                           }`}
-                           disabled={!store.selection.selectedSourceId}
-                           title="Play individual source file"
-                        >
-                           Source
-                        </button>
-                        <button
-                           onClick={async () => {
-                              const hasTimelineContent = store.project?.timeline.tracks.some(t => t.items.length > 0);
-                              if (hasTimelineContent) {
-                                 await store.renderPreview();
-                              }
-                           }}
-                           className={`px-2.5 py-1 rounded-md font-medium transition ${
-                              store.playback.mode === "timeline"
-                                 ? "bg-studio-accent text-white shadow-sm"
-                                 : "bg-studio-raised text-studio-text-muted hover:text-studio-text"
-                           }`}
-                           disabled={!store.project?.timeline.tracks.some(t => t.items.length > 0)}
-                           title="Play rendered timeline composition"
-                        >
-                           Timeline Mix
-                           {store.playback.previewStale && store.playback.mode === "timeline" && (
-                              <span className="ml-1 text-studio-snap animate-pulse">●</span>
-                           )}
-                        </button>
+               <div className="space-y-2.5 shrink-0 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap text-[12px] bg-studio-panel px-3.5 py-2 rounded-xl border border-studio-border min-w-0">
+                     <span className="text-studio-text-muted font-medium shrink-0">Playback:</span>
+                     <button
+                        onClick={() => store.playFullSource()}
+                        data-testid="playback-mode-source"
+                        className={`px-2.5 py-1 rounded-md font-medium transition shrink-0 ${
+                           store.playback.mode === "source" && !store.playback.previewingClipId
+                              ? "bg-studio-accent text-white shadow-sm"
+                              : "bg-studio-raised text-studio-text-muted hover:text-studio-text"
+                        }`}
+                        disabled={!store.selection.selectedSourceId}
+                        title="Play the whole source file, ignoring any selection"
+                     >
+                        Source
+                     </button>
+                     <button
+                        onClick={async () => {
+                           if (hasTimelineContent) {
+                              await store.renderPreview();
+                           }
+                        }}
+                        data-testid="playback-mode-timeline"
+                        className={`px-2.5 py-1 rounded-md font-medium transition shrink-0 ${
+                           store.playback.mode === "timeline"
+                              ? "bg-studio-accent text-white shadow-sm"
+                              : "bg-studio-raised text-studio-text-muted hover:text-studio-text"
+                        }`}
+                        disabled={!hasTimelineContent}
+                        title="Play the rendered timeline composition"
+                     >
+                        Timeline Mix
+                        {store.playback.previewStale && store.playback.mode === "timeline" && (
+                           <span className="ml-1 text-studio-snap animate-pulse">●</span>
+                        )}
+                     </button>
 
-                        {/* Unambiguous "what am I about to hear" indicator — source
-                            playback, a clip preview, and the timeline mix all drive
-                            the same <audio> element, so the label (not a guess) is
-                            the only thing that tells them apart. */}
-                        <div
-                           data-testid="now-playing-indicator"
-                           data-now-playing-kind={nowPlaying.kind}
-                           className={`ml-auto flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium max-w-55 ${
-                              nowPlaying.kind === "timeline"
-                                 ? "bg-studio-success/15 text-studio-success"
-                                 : nowPlaying.kind === "clip"
-                                 ? "bg-studio-snap/15 text-studio-snap"
-                                 : "bg-studio-accent/15 text-studio-accent-strong"
-                           }`}
-                        >
-                           {store.playback.playing ? <Play size={11} className="shrink-0" /> : <span className="w-2.75 shrink-0" />}
-                           <span className="uppercase tracking-wide shrink-0">
-                              {nowPlaying.kind === "timeline" ? "Timeline Mix" : nowPlaying.kind === "clip" ? "Clip Preview" : "Source"}
+                     {/* Unambiguous "what am I about to hear" indicator — source
+                         playback, a clip preview, and the timeline mix all drive
+                         the same <audio> element, so the label (not a guess) is
+                         the only thing that tells them apart. */}
+                     <div
+                        data-testid="now-playing-indicator"
+                        data-now-playing-kind={nowPlaying.kind}
+                        className={`ml-auto flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium max-w-55 min-w-0 ${
+                           nowPlaying.kind === "timeline"
+                              ? "bg-studio-success/15 text-studio-success"
+                              : nowPlaying.kind === "clip"
+                              ? "bg-studio-snap/15 text-studio-snap"
+                              : "bg-studio-accent/15 text-studio-accent-strong"
+                        }`}
+                     >
+                        {store.playback.playing ? <Play size={11} className="shrink-0" /> : <span className="w-2.75 shrink-0" />}
+                        <span className="uppercase tracking-wide shrink-0">
+                           {nowPlaying.kind === "timeline" ? "Timeline Mix" : nowPlaying.kind === "clip" ? "Clip Preview" : "Source"}
+                        </span>
+                        {nowPlaying.kind !== "timeline" && (
+                           <span className="truncate opacity-80" title={nowPlaying.label}>
+                              · {nowPlaying.label}
                            </span>
-                           {nowPlaying.kind !== "timeline" && (
-                              <span className="truncate opacity-80" title={nowPlaying.label}>
-                                 · {nowPlaying.label}
-                              </span>
-                           )}
-                        </div>
-
-                        {store.playback.mode === "timeline" && store.playback.previewStale && (
-                           <button
-                              onClick={() => store.renderPreview()}
-                              className="px-2.5 py-1 rounded-md bg-studio-snap/20 hover:bg-studio-snap/30 text-studio-snap text-[11px] font-medium transition"
-                           >
-                              Update Preview
-                           </button>
                         )}
                      </div>
 
-                     <PlayerBar
-                        playing={store.playback.playing}
-                        playhead={store.playback.playhead}
-                        duration={effectiveDuration || 30}
-                        volume={store.playback.volume}
-                        muted={store.playback.muted}
-                        playbackRate={store.playback.playbackRate}
-                        onPlay={() => store.play()}
-                        onPause={() => store.pause()}
-                        onStop={() => store.stop()}
-                        onSeek={(t) => store.seek(t)}
-                        onVolumeChange={(v) => store.setVolume(v)}
-                        onMuteToggle={() => store.setMuted(!store.playback.muted)}
-                        onPlaybackRateChange={(r) => store.setPlaybackRate(r)}
-                        previewPath={store.playback.previewPath}
-                        mode={store.playback.mode}
-                        sourcePlaybackPath={store.playback.sourcePlaybackPath}
-                        selectionStart={store.playback.mode === "source" ? store.selection.selectionStart : null}
-                        selectionEnd={store.playback.mode === "source" ? store.selection.selectionEnd : null}
-                        looping={store.playback.looping}
-                     />
+                     {store.playback.mode === "timeline" && store.playback.previewStale && (
+                        <button
+                           onClick={() => store.renderPreview()}
+                           className="px-2.5 py-1 rounded-md bg-studio-snap/20 hover:bg-studio-snap/30 text-studio-snap text-[11px] font-medium transition shrink-0"
+                        >
+                           Update Preview
+                        </button>
+                     )}
                   </div>
+
+                  <PlayerBar
+                     playing={store.playback.playing}
+                     playhead={store.playback.playhead}
+                     duration={effectiveDuration || 30}
+                     volume={store.playback.volume}
+                     muted={store.playback.muted}
+                     playbackRate={store.playback.playbackRate}
+                     onPlay={() => store.play()}
+                     onPause={() => store.pause()}
+                     onStop={() => store.stop()}
+                     onSeek={(t) => store.seek(t)}
+                     onVolumeChange={(v) => store.setVolume(v)}
+                     onMuteToggle={() => store.setMuted(!store.playback.muted)}
+                     onPlaybackRateChange={(r) => store.setPlaybackRate(r)}
+                     previewPath={store.playback.previewPath}
+                     mode={store.playback.mode}
+                     sourcePlaybackPath={store.playback.sourcePlaybackPath}
+                     previewStart={store.playback.mode === "source" ? store.playback.previewStart : null}
+                     previewEnd={store.playback.mode === "source" ? store.playback.previewEnd : null}
+                     looping={store.playback.looping}
+                  />
+               </div>
 
                {/* Resize handle */}
                <div
@@ -874,7 +1021,7 @@ export function StudioView() {
                      e.preventDefault();
                      beginTimelineResize(e.clientY, timelineHeight);
                   }}
-                  className="group flex items-center justify-center h-3 shrink-0 cursor-row-resize touch-none"
+                  className="group relative flex items-center justify-center h-3 shrink-0 cursor-row-resize touch-none"
                   title="Drag to resize the timeline"
                   data-testid="timeline-resize-handle"
                >
@@ -882,24 +1029,29 @@ export function StudioView() {
                   <GripHorizontal size={12} className="absolute text-studio-text-faint opacity-0 group-hover:opacity-60 transition" />
                </div>
 
-               {/* Timeline - THE CREATIVE WORKSPACE */}
-               <div className="shrink-0 overflow-hidden bg-studio-panel rounded-xl border border-studio-border p-2.5" style={{ height: timelineHeight }}>
+               {/* Timeline — THE CREATIVE WORKSPACE */}
+               <div
+                  className="shrink-0 overflow-hidden bg-studio-panel rounded-xl border border-studio-border p-2.5"
+                  style={{ height: timelineHeight }}
+               >
                   <Timeline
                      key={store.project.createdAt}
                      tracks={store.project.timeline.tracks}
                      clips={store.project.clips}
-                     duration={projectDuration || 30}
+                     duration={projectDuration}
                      selectedTrackId={store.selection.selectedTrackId}
                      selectedItemTrackId={store.selection.selectedItemTrackId}
                      selectedItemIndex={store.selection.selectedItemIndex}
                      onMoveItem={(trackId, idx, newPos, recordHistory) =>
                         store.moveItem(trackId, idx, newPos, recordHistory)
                      }
+                     onMoveItemToTrack={(fromTrackId, idx, toTrackId, newPos, recordHistory) =>
+                        store.moveItemToTrack(fromTrackId, idx, toTrackId, newPos, recordHistory)
+                     }
+                     onCommitItemOrder={(trackId, idx) => store.commitItemOrder(trackId, idx)}
                      onBeginItemEdit={() => store.checkpointHistory()}
                      onSplitItem={(trackId, idx, atTime) => store.splitItem(trackId, idx, atTime)}
-                     onRemoveItem={(trackId, idx) =>
-                        store.removeItem(trackId, idx)
-                     }
+                     onRemoveItem={(trackId, idx) => store.removeItem(trackId, idx)}
                      onDuplicateItem={(trackId, idx) => store.duplicateItem(trackId, idx)}
                      onSelectItem={(trackId, idx) => {
                         store.setSelectedTrack(trackId);
@@ -916,7 +1068,11 @@ export function StudioView() {
                      }
                      onToggleMute={(trackId, muted) => store.setTrackMute(trackId, muted)}
                      onToggleSolo={(trackId, solo) => store.setTrackSolo(trackId, solo)}
+                     onTrackVolume={(trackId, v) => store.setTrackVolume(trackId, v)}
+                     onCloseGaps={(trackId) => store.closeGaps(trackId)}
                      playhead={store.playback.playhead}
+                     onSeek={(t) => store.seek(t)}
+                     playing={store.playback.playing && store.playback.mode === "timeline"}
                      externalDrag={
                         dragClip
                            ? { clipId: dragClip.clipId, name: dragClip.name, clientX: dragClip.x, clientY: dragClip.y }
@@ -936,6 +1092,7 @@ export function StudioView() {
             onClose={() => setShowExportDialog(false)}
             onExport={handleExportMix}
             isLoading={exporting}
+            durationSeconds={projectDuration}
          />
 
          {/* Floating ghost for the pointer-based clip drag (library -> timeline) */}

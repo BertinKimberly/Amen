@@ -297,14 +297,20 @@ mod tests {
         fields.insert("album".to_string(), "B".to_string());
         fields.insert("title".to_string(), "T".to_string());
         fields.insert("ext".to_string(), "mp3".to_string());
+        // `build_output_path` normalises separators inside the TEMPLATE, but
+        // takes the base directory as given — and `C:\Music` is not a path on
+        // Unix, it is one filename containing backslashes. So the base and the
+        // expectation both have to be native, or this asserts nothing on Linux.
+        let base = if cfg!(windows) { r"C:\Music" } else { "/music" };
         let p = build_output_path(
-            "C:\\Music",
+            base,
             "%(artist)s/%(album)s/%(title)s.%(ext)s",
             &fields,
             "mp3",
         )
         .unwrap();
-        assert_eq!(p, PathBuf::from(r"C:\Music\A\B\T.mp3"));
+        let expected = PathBuf::from(base).join("A").join("B").join("T.mp3");
+        assert_eq!(p, expected);
     }
 
     #[test]

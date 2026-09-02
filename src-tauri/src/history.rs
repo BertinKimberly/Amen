@@ -63,6 +63,23 @@ impl HistoryDb {
         })
     }
 
+    /// A private, empty database for one test.
+    ///
+    /// `open_at_temp` is NOT usable here: it hands every caller the same fixed
+    /// file, and cargo runs a suite's tests in parallel threads, so tests read
+    /// each other's rows — and a file left behind by an earlier run poisoned
+    /// the next one. Row-count assertions therefore failed intermittently
+    /// depending on scheduling. (It stays as it is for the production fallback
+    /// in `download.rs`, which does want a real file that survives a restart.)
+    #[cfg(test)]
+    fn open_isolated() -> Self {
+        let conn = Connection::open_in_memory().expect("in-memory sqlite");
+        Self::init_schema(&conn).expect("test schema");
+        Self {
+            conn: Mutex::new(conn),
+        }
+    }
+
     fn open_at(path: &std::path::Path) -> AppResult<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
@@ -70,6 +87,15 @@ impl HistoryDb {
         }
         let conn = Connection::open(path)
             .map_err(|e| AppError::with_detail("db_error", "Could not open the local database.", e.to_string()))?;
+        Self::init_schema(&conn)?;
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
+    }
+
+    /// Create the tables and indexes. Shared so a test database is built by the
+    /// same statements as a real one and cannot drift from it.
+    fn init_schema(conn: &Connection) -> AppResult<()> {
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
              PRAGMA synchronous=NORMAL;
@@ -103,9 +129,7 @@ impl HistoryDb {
              );",
         )
         .map_err(|e| AppError::with_detail("db_error", "Could not initialize the local database.", e.to_string()))?;
-        Ok(Self {
-            conn: Mutex::new(conn),
-        })
+        Ok(())
     }
 
     pub fn insert_history(&self, item: &HistoryItem) -> AppResult<()> {
@@ -331,7 +355,7 @@ mod tests {
 
     #[test]
     fn history_insert_list_remove() {
-        let db = HistoryDb::open_at_temp();
+        let db = HistoryDb::open_isolated();
         let item = sample();
         db.insert_history(&item).unwrap();
 
@@ -360,7 +384,7 @@ mod tests {
 
     #[test]
     fn jobs_persist_roundtrip() {
-        let db = HistoryDb::open_at_temp();
+        let db = HistoryDb::open_isolated();
         let job = PersistedJob {
             id: "j1".to_string(),
             url: "https://example.com/v".to_string(),

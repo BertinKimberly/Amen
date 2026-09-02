@@ -82,7 +82,7 @@ test.describe("Audio Studio — source import & playback", () => {
       await startInput.press("Enter");
       await page.waitForTimeout(150);
 
-      const durationText = await page.locator("text=Duration").locator("..").locator("div").last().textContent();
+      const durationText = await page.locator(String.raw`[data-testid="selection-duration"]`).textContent();
       // End is somewhere around 0:04.8 (60% of 8s); Start now 1.000 -> duration ~3.8s
       expect(durationText).toMatch(/0:0[2-4]\./);
    });
@@ -98,7 +98,7 @@ test.describe("Audio Studio — source import & playback", () => {
       await expect(page.locator('[data-testid="clip-item"]').first()).toBeVisible();
 
       // Re-select the same region (creating the clip doesn't clear it) and preview.
-      const previewBtn = page.locator('button[title="Preview selection"]');
+      const previewBtn = page.locator('[data-testid="preview-selection"]');
       await previewBtn.click();
       await page.waitForTimeout(300);
 

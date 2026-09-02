@@ -4,11 +4,12 @@ import type {
    StudioProject,
    StudioSource,
    StudioClip,
+   StudioTrack,
    StudioTimelineItem,
    WaveformData,
    RenderResult,
 } from "../lib/studioTypes";
-import { itemEffectiveDuration } from "../lib/studioTypes";
+import { itemEffectiveDuration, itemSpan } from "../lib/studioTypes";
 import { formatTime } from "../lib/studioTime";
 import { studioApi, assetUrl } from "../lib/api";
 import { nanoid } from "nanoid";
@@ -34,7 +35,18 @@ export interface PlaybackState {
     * previewed.
     */
    previewingClipId: string | null;
-   /** Loop the current waveform selection during source playback, instead of stopping at its end. Purely a transient playback preference — not saved with the project. */
+   /**
+    * The authoritative bounds the audio element enforces, in the current
+    * mode's time domain. Non-null ONLY while previewing a clip or an ad-hoc
+    * selection. Plain source playback and Timeline Mix leave these null, so
+    * "play the source" can never be silently truncated by a leftover
+    * selection, and "preview this clip" can never run on into the rest of the
+    * source. Previously both behaviours were inferred from the waveform
+    * selection, which made them impossible to tell apart.
+    */
+   previewStart: number | null;
+   previewEnd: number | null;
+   /** Loop the preview region during playback, instead of stopping at its end. Purely a transient playback preference — not saved with the project. */
    looping: boolean;
 }
 
@@ -90,13 +102,34 @@ export interface StudioStore {
    removeTrack: (id: string) => void;
    setTrackMute: (id: string, muted: boolean) => void;
    setTrackSolo: (id: string, solo: boolean) => void;
+   setTrackVolume: (id: string, volume: number) => void;
+   renameTrack: (id: string, name: string) => void;
 
    addItemToTimeline: (
       clipId: string,
       trackId: string,
       position: number,
    ) => void;
+   /** Place a clip flush against the end of everything already on `trackId` — the one-gesture way to build a sequential mix. Returns the position it landed at. */
+   appendItemToTrack: (clipId: string, trackId: string) => number;
+   /** Pull every item on a track leftward so they play back-to-back with no dead air, preserving order. */
+   closeGaps: (trackId: string) => void;
+   /**
+    * Live-move an item within its track. Deliberately does NOT re-sort: a
+    * mid-gesture re-sort renumbers the array under the drag and hijacks it
+    * onto a neighbouring clip. Call `commitItemOrder` when the gesture ends.
+    */
    moveItem: (trackId: string, index: number, newPosition: number, recordHistory?: boolean) => void;
+   /** Restore the sorted-by-position invariant after a move gesture, returning where the moved item ended up. */
+   commitItemOrder: (trackId: string, index: number) => number;
+   /** Move an item to a different track (and position) in one operation, keeping all its clip settings. Returns the item's new index on the destination track. */
+   moveItemToTrack: (
+      fromTrackId: string,
+      index: number,
+      toTrackId: string,
+      newPosition: number,
+      recordHistory?: boolean,
+   ) => number | null;
    removeItem: (trackId: string, index: number) => void;
    duplicateItem: (trackId: string, index: number) => void;
    /** Split a timeline item into two at `atTime` (an absolute timeline position). No-ops if `atTime` doesn't fall strictly inside the item. Both halves keep playing the same underlying audio with no fade at the cut, since it's the same continuous source content. */
@@ -118,11 +151,13 @@ export interface StudioStore {
    setVolume: (v: number) => void;
    setMuted: (m: boolean) => void;
    setPlaybackRate: (r: number) => void;
-   /** Load a clip's source, set the selection to its bounds, and play it — unambiguously labeled as a CLIP PREVIEW, never mistaken for full-source playback. */
+   /** Load a clip's source, set the selection to its bounds, and play ONLY that region — unambiguously labeled as a CLIP PREVIEW, never mistaken for full-source playback. */
    previewClip: (clipId: string) => Promise<void>;
    /** Play the current ad-hoc waveform selection (no saved clip yet), labeled as a preview rather than full-source playback. */
    previewSelection: () => void;
-   /** Toggle looping the current waveform selection during source playback. */
+   /** Leave any bounded preview and play the whole selected source from the playhead. */
+   playFullSource: () => void;
+   /** Toggle looping the current preview region during playback. */
    toggleLoop: () => void;
 
    // Actions: Rendering
@@ -158,6 +193,71 @@ export interface StudioStore {
 
 // ---- Store Implementation ---------------------------------------------------
 
+/** How many edits deep undo goes. Each entry is a full project snapshot, so
+ *  this is a memory bound as much as a UX one. */
+const HISTORY_LIMIT = 100;
+
+/** Shortest span that can become a clip — below this it's a mis-click, not a selection. */
+export const MIN_CLIP_DURATION = 0.02;
+
+/**
+ * Snapshot the current project onto the undo stack and invalidate redo.
+ * Every mutating action funnels through this so the stack can never grow
+ * without bound (the previous inline `state.past = [...state.past, snap]`
+ * pattern was uncapped) and so undo semantics stay identical everywhere.
+ */
+function pushHistory(state: StudioStore) {
+   if (!state.project) return;
+   state.past = [...state.past, JSON.parse(JSON.stringify(state.project))].slice(-HISTORY_LIMIT);
+   state.future = [];
+}
+
+/**
+ * Re-establish invariants after undo/redo swaps the whole project out.
+ * Selections are (trackId, index) pairs into an array that just changed
+ * shape, so a stale index would point at a different clip — or past the end —
+ * and the next Delete/Split keystroke would act on the wrong thing. The
+ * rendered timeline preview is also no longer what the timeline says.
+ */
+function afterHistoryJump(state: StudioStore) {
+   state.playback.previewStale = true;
+   const project = state.project;
+   const trackId = state.selection.selectedItemTrackId;
+   const index = state.selection.selectedItemIndex;
+   if (!project || trackId === null || index === null) return;
+   const track = project.timeline.tracks.find((t) => t.id === trackId);
+   if (!track || !track.items[index]) {
+      state.selection.selectedItemTrackId = null;
+      state.selection.selectedItemIndex = null;
+   }
+}
+
+/** A fresh timeline placement with neutral settings. */
+function newItem(clipId: string, position: number): StudioTimelineItem {
+   return {
+      clipId,
+      position: Math.max(0, position),
+      volume: 1.0,
+      muted: false,
+      fadeIn: 0,
+      fadeOut: 0,
+      crossfadePrev: 0,
+      trimStart: 0,
+      trimEnd: 0,
+   };
+}
+
+/** Where the content on a track currently ends — i.e. where the next clip appended to it goes. */
+function trackEnd(track: StudioTrack, project: StudioProject): number {
+   let end = 0;
+   for (const item of track.items) {
+      const clip = project.clips.find((c) => c.id === item.clipId);
+      if (!clip) continue;
+      end = Math.max(end, itemSpan(item, clip).end);
+   }
+   return end;
+}
+
 const createDefaultProject = (name: string): StudioProject => ({
    version: 1,
    name,
@@ -172,6 +272,7 @@ const createDefaultProject = (name: string): StudioProject => ({
             name: "Track 1",
             muted: false,
             solo: false,
+            volume: 1,
             items: [],
          },
       ],
@@ -210,6 +311,8 @@ export const useStudioStore = create<StudioStore>()(
          mode: "source",
          sourcePlaybackPath: null,
          previewingClipId: null,
+         previewStart: null,
+         previewEnd: null,
          looping: false,
       },
       selection: {
@@ -255,6 +358,8 @@ export const useStudioStore = create<StudioStore>()(
                mode: "source",
                sourcePlaybackPath: null,
                previewingClipId: null,
+               previewStart: null,
+               previewEnd: null,
                looping: false,
             };
             state.waveformCache = {};
@@ -268,6 +373,12 @@ export const useStudioStore = create<StudioStore>()(
          });
          try {
             const loaded = await studioApi.loadProject(path);
+            // Projects saved before per-track gain existed arrive without a
+            // `volume`; default them to unity rather than letting `undefined`
+            // reach a gain slider (which would render as 0 = silent).
+            for (const track of loaded.timeline.tracks) {
+               if (typeof track.volume !== "number" || !isFinite(track.volume)) track.volume = 1;
+            }
             set((state: StudioStore) => {
                state.project = loaded;
                state.savedPath = path;
@@ -356,11 +467,7 @@ export const useStudioStore = create<StudioStore>()(
             const id = nanoid();
             set((state: StudioStore) => {
                if (!state.project) return;
-               state.past = [
-                  ...state.past,
-                  JSON.parse(JSON.stringify(state.project)),
-               ];
-               state.future = [];
+               pushHistory(state);
                state.project.sources.push({
                   id,
                   path,
@@ -381,11 +488,7 @@ export const useStudioStore = create<StudioStore>()(
       removeSource: (id: string) => {
          set((state: StudioStore) => {
             if (!state.project) return;
-            state.past = [
-               ...state.past,
-               JSON.parse(JSON.stringify(state.project)),
-            ];
-            state.future = [];
+            pushHistory(state);
             const removedClipIds = new Set(
                state.project.clips.filter((c) => c.sourceId === id).map((c) => c.id),
             );
@@ -429,6 +532,8 @@ export const useStudioStore = create<StudioStore>()(
                state.playback.playhead = 0;
                state.playback.playing = false;
                state.playback.previewingClipId = null;
+               state.playback.previewStart = null;
+               state.playback.previewEnd = null;
                state.playback.looping = false;
             }
          });
@@ -464,14 +569,16 @@ export const useStudioStore = create<StudioStore>()(
       createClipFromSelection: (name?: string) => {
          set((state: StudioStore) => {
             if (!state.project || !state.selection.selectedSourceId) return;
-            const start = state.selection.selectionStart ?? 0;
-            const end = state.selection.selectionEnd ?? 1;
+            const { selectionStart, selectionEnd } = state.selection;
+            // A clip with no real selection behind it used to fall back to
+            // 0 -> 1s, quietly producing a one-second clip the user never
+            // asked for. Refusing is honest; the UI keeps the button disabled.
+            if (selectionStart === null || selectionEnd === null) return;
+            const start = Math.max(0, Math.min(selectionStart, selectionEnd));
+            const end = Math.max(selectionStart, selectionEnd);
+            if (end - start < MIN_CLIP_DURATION) return;
             const id = nanoid();
-            state.past = [
-               ...state.past,
-               JSON.parse(JSON.stringify(state.project)),
-            ];
-            state.future = [];
+            pushHistory(state);
             state.project.clips.push({
                id,
                sourceId: state.selection.selectedSourceId,
@@ -479,6 +586,7 @@ export const useStudioStore = create<StudioStore>()(
                start,
                end,
             });
+            state.selection.selectedClipId = id;
             state.modified = true;
          });
       },
@@ -488,11 +596,7 @@ export const useStudioStore = create<StudioStore>()(
             if (!state.project) return;
             const clip = state.project.clips.find((c) => c.id === id);
             if (clip) {
-               state.past = [
-                  ...state.past,
-                  JSON.parse(JSON.stringify(state.project)),
-               ];
-               state.future = [];
+               pushHistory(state);
                clip.name = name;
                state.modified = true;
             }
@@ -502,11 +606,7 @@ export const useStudioStore = create<StudioStore>()(
       deleteClip: (id: string) => {
          set((state: StudioStore) => {
             if (!state.project) return;
-            state.past = [
-               ...state.past,
-               JSON.parse(JSON.stringify(state.project)),
-            ];
-            state.future = [];
+            pushHistory(state);
             state.project.clips = state.project.clips.filter(
                (c) => c.id !== id,
             );
@@ -526,11 +626,7 @@ export const useStudioStore = create<StudioStore>()(
             if (!state.project) return;
             const orig = state.project.clips.find((c) => c.id === id);
             if (!orig) return;
-            state.past = [
-               ...state.past,
-               JSON.parse(JSON.stringify(state.project)),
-            ];
-            state.future = [];
+            pushHistory(state);
             dup = {
                id: nanoid(),
                sourceId: orig.sourceId,
@@ -549,8 +645,7 @@ export const useStudioStore = create<StudioStore>()(
             if (!state.project) return;
             const src = state.project.sources.find((s) => s.id === sourceId);
             if (!src) return;
-            state.past = [...state.past, JSON.parse(JSON.stringify(state.project))];
-            state.future = [];
+            pushHistory(state);
             const clamped = Math.max(0, Math.min(src.duration, time));
             src.markers.push({
                id: nanoid(),
@@ -567,8 +662,7 @@ export const useStudioStore = create<StudioStore>()(
             if (!state.project) return;
             const src = state.project.sources.find((s) => s.id === sourceId);
             if (!src) return;
-            state.past = [...state.past, JSON.parse(JSON.stringify(state.project))];
-            state.future = [];
+            pushHistory(state);
             src.markers = src.markers.filter((m) => m.id !== markerId);
             state.modified = true;
          });
@@ -580,8 +674,7 @@ export const useStudioStore = create<StudioStore>()(
             const src = state.project.sources.find((s) => s.id === sourceId);
             const marker = src?.markers.find((m) => m.id === markerId);
             if (!marker) return;
-            state.past = [...state.past, JSON.parse(JSON.stringify(state.project))];
-            state.future = [];
+            pushHistory(state);
             marker.label = label;
             state.modified = true;
          });
@@ -590,17 +683,14 @@ export const useStudioStore = create<StudioStore>()(
       addTrack: (name?: string) => {
          set((state: StudioStore) => {
             if (!state.project) return;
-            state.past = [
-               ...state.past,
-               JSON.parse(JSON.stringify(state.project)),
-            ];
-            state.future = [];
+            pushHistory(state);
             const idx = state.project.timeline.tracks.length;
             state.project.timeline.tracks.push({
                id: nanoid(),
                name: name || `Track ${idx + 1}`,
                muted: false,
                solo: false,
+               volume: 1,
                items: [],
             });
             state.modified = true;
@@ -610,11 +700,7 @@ export const useStudioStore = create<StudioStore>()(
       removeTrack: (id: string) => {
          set((state: StudioStore) => {
             if (!state.project) return;
-            state.past = [
-               ...state.past,
-               JSON.parse(JSON.stringify(state.project)),
-            ];
-            state.future = [];
+            pushHistory(state);
             state.project.timeline.tracks =
                state.project.timeline.tracks.filter((t) => t.id !== id);
             if (state.selection.selectedTrackId === id)
@@ -647,6 +733,28 @@ export const useStudioStore = create<StudioStore>()(
          });
       },
 
+      setTrackVolume: (id: string, volume: number) => {
+         set((state: StudioStore) => {
+            if (!state.project) return;
+            const track = state.project.timeline.tracks.find((t) => t.id === id);
+            if (!track) return;
+            track.volume = Math.max(0, Math.min(2, volume));
+            state.modified = true;
+            state.playback.previewStale = true;
+         });
+      },
+
+      renameTrack: (id: string, name: string) => {
+         set((state: StudioStore) => {
+            if (!state.project) return;
+            const track = state.project.timeline.tracks.find((t) => t.id === id);
+            if (!track || !name.trim()) return;
+            pushHistory(state);
+            track.name = name.trim();
+            state.modified = true;
+         });
+      },
+
       addItemToTimeline: (
          clipId: string,
          trackId: string,
@@ -654,11 +762,7 @@ export const useStudioStore = create<StudioStore>()(
       ) => {
          set((state: StudioStore) => {
             if (!state.project) return;
-            state.past = [
-               ...state.past,
-               JSON.parse(JSON.stringify(state.project)),
-            ];
-            state.future = [];
+            pushHistory(state);
             const track = state.project.timeline.tracks.find(
                (t) => t.id === trackId,
             );
@@ -680,6 +784,68 @@ export const useStudioStore = create<StudioStore>()(
          });
       },
 
+      appendItemToTrack: (clipId: string, trackId: string) => {
+         let landedAt = 0;
+         set((state: StudioStore) => {
+            if (!state.project) return;
+            const track = state.project.timeline.tracks.find((t) => t.id === trackId);
+            if (!track) return;
+            landedAt = trackEnd(track, state.project);
+            pushHistory(state);
+            track.items.push(newItem(clipId, landedAt));
+            track.items.sort((a, b) => a.position - b.position);
+            state.selection.selectedTrackId = trackId;
+            state.selection.selectedItemTrackId = trackId;
+            state.selection.selectedItemIndex = track.items.findIndex(
+               (i) => i.clipId === clipId && i.position === landedAt,
+            );
+            state.modified = true;
+            state.playback.previewStale = true;
+         });
+         return landedAt;
+      },
+
+      closeGaps: (trackId: string) => {
+         set((state: StudioStore) => {
+            if (!state.project) return;
+            const project = state.project;
+            const track = project.timeline.tracks.find((t) => t.id === trackId);
+            if (!track || track.items.length === 0) return;
+            const ordered = [...track.items].sort((a, b) => a.position - b.position);
+            // Work the new layout out FIRST, without touching the draft: the
+            // undo snapshot has to capture the pre-compaction state, and a
+            // track that is already gapless must not burn an undo step (or
+            // mark the project dirty) on a no-op click.
+            let cursor = 0;
+            let changed = false;
+            const targets: number[] = [];
+            for (const item of ordered) {
+               const clip = project.clips.find((c) => c.id === item.clipId);
+               if (!clip) {
+                  targets.push(item.position);
+                  continue;
+               }
+               // A crossfade means this clip is MEANT to overlap its
+               // predecessor; compacting preserves that overlap rather than
+               // silently flattening the transition into a hard cut.
+               const overlap = Math.max(0, item.crossfadePrev);
+               const target = cursor + overlap;
+               if (Math.abs(item.position - target) > 1e-6) changed = true;
+               targets.push(target);
+               cursor = target - overlap + itemEffectiveDuration(item, clip);
+            }
+            if (!changed) return;
+            pushHistory(state);
+            const compacted = [...track.items].sort((a, b) => a.position - b.position);
+            compacted.forEach((item, i) => {
+               item.position = targets[i];
+            });
+            track.items = compacted;
+            state.modified = true;
+            state.playback.previewStale = true;
+         });
+      },
+
       moveItem: (trackId: string, index: number, newPosition: number, recordHistory = true) => {
          set((state: StudioStore) => {
             if (!state.project) return;
@@ -688,27 +854,75 @@ export const useStudioStore = create<StudioStore>()(
             );
             if (!track || !track.items[index]) return;
             if (recordHistory) {
-               state.past = [
-                  ...state.past,
-                  JSON.parse(JSON.stringify(state.project)),
-               ];
-               state.future = [];
+               pushHistory(state);
             }
-            track.items[index].position = newPosition;
-            track.items.sort((a, b) => a.position - b.position);
+            // Deliberately NOT re-sorted here. Sorting mid-drag renumbers the
+            // array under the gesture, so the moment a clip is dragged past a
+            // neighbour the drag would silently switch to moving that
+            // neighbour instead. `commitItemOrder` restores the sorted
+            // invariant once the pointer is released.
+            track.items[index].position = Math.max(0, newPosition);
             state.modified = true;
             state.playback.previewStale = true;
          });
       },
 
+      moveItemToTrack: (
+         fromTrackId: string,
+         index: number,
+         toTrackId: string,
+         newPosition: number,
+         recordHistory = true,
+      ) => {
+         let newIndex: number | null = null;
+         set((state: StudioStore) => {
+            if (!state.project) return;
+            const tracks = state.project.timeline.tracks;
+            const from = tracks.find((t) => t.id === fromTrackId);
+            const to = tracks.find((t) => t.id === toTrackId);
+            if (!from || !to || !from.items[index]) return;
+            if (recordHistory) pushHistory(state);
+            const [item] = from.items.splice(index, 1);
+            item.position = Math.max(0, newPosition);
+            // A crossfade is a relationship with the PREVIOUS clip on the same
+            // track. Carrying it across would make the new track's unrelated
+            // neighbour bleed into this clip, so it's dropped on the move.
+            item.crossfadePrev = 0;
+            to.items.push(item);
+            to.items.sort((a, b) => a.position - b.position);
+            newIndex = to.items.indexOf(item);
+            state.selection.selectedTrackId = toTrackId;
+            state.selection.selectedItemTrackId = toTrackId;
+            state.selection.selectedItemIndex = newIndex;
+            state.modified = true;
+            state.playback.previewStale = true;
+         });
+         return newIndex;
+      },
+
+      commitItemOrder: (trackId: string, index: number) => {
+         let newIndex = index;
+         set((state: StudioStore) => {
+            if (!state.project) return;
+            const track = state.project.timeline.tracks.find((t) => t.id === trackId);
+            if (!track || !track.items[index]) return;
+            const item = track.items[index];
+            track.items.sort((a, b) => a.position - b.position);
+            newIndex = track.items.indexOf(item);
+            if (
+               state.selection.selectedItemTrackId === trackId &&
+               state.selection.selectedItemIndex === index
+            ) {
+               state.selection.selectedItemIndex = newIndex;
+            }
+         });
+         return newIndex;
+      },
+
       checkpointHistory: () => {
          set((state: StudioStore) => {
             if (!state.project) return;
-            state.past = [
-               ...state.past,
-               JSON.parse(JSON.stringify(state.project)),
-            ];
-            state.future = [];
+            pushHistory(state);
          });
       },
 
@@ -719,11 +933,7 @@ export const useStudioStore = create<StudioStore>()(
                (t) => t.id === trackId,
             );
             if (!track) return;
-            state.past = [
-               ...state.past,
-               JSON.parse(JSON.stringify(state.project)),
-            ];
-            state.future = [];
+            pushHistory(state);
             track.items.splice(index, 1);
             if (state.selection.selectedItemTrackId === trackId) {
                if (state.selection.selectedItemIndex === index) {
@@ -749,11 +959,7 @@ export const useStudioStore = create<StudioStore>()(
             if (!track || !item) return;
             const clip = state.project.clips.find((c) => c.id === item.clipId);
             const clipDuration = clip ? clip.end - clip.start - (item.trimStart ?? 0) - (item.trimEnd ?? 0) : 0;
-            state.past = [
-               ...state.past,
-               JSON.parse(JSON.stringify(state.project)),
-            ];
-            state.future = [];
+            pushHistory(state);
             track.items.push({
                ...item,
                position: item.position + Math.max(0.01, clipDuration),
@@ -778,11 +984,7 @@ export const useStudioStore = create<StudioStore>()(
             );
             if (!track || !track.items[index]) return;
             if (recordHistory) {
-               state.past = [
-                  ...state.past,
-                  JSON.parse(JSON.stringify(state.project)),
-               ];
-               state.future = [];
+               pushHistory(state);
             }
             Object.assign(track.items[index], updates);
             state.modified = true;
@@ -806,8 +1008,7 @@ export const useStudioStore = create<StudioStore>()(
             // would leave a sliver too small to be a meaningful clip.
             if (splitOffset < MIN_PIECE_DURATION || splitOffset > duration - MIN_PIECE_DURATION) return;
 
-            state.past = [...state.past, JSON.parse(JSON.stringify(state.project))];
-            state.future = [];
+            pushHistory(state);
 
             const originalTrimEnd = item.trimEnd ?? 0;
             const originalFadeOut = item.fadeOut;
@@ -846,8 +1047,10 @@ export const useStudioStore = create<StudioStore>()(
       stop: () => {
          set((s: StudioStore) => {
             s.playback.playing = false;
-            s.playback.playhead = 0;
-            s.playback.previewingClipId = null;
+            // Stop returns to the start of whatever was playing — the preview
+            // region if one is active, otherwise the beginning — rather than
+            // silently dropping out of a preview back into the whole source.
+            s.playback.playhead = s.playback.previewStart ?? 0;
          });
       },
       seek: (time: number) => {
@@ -895,6 +1098,10 @@ export const useStudioStore = create<StudioStore>()(
             s.selection.selectionEnd = clip.end;
             s.selection.selectedClipId = clipId;
             s.playback.previewingClipId = clipId;
+            // The bounds are what actually stops playback at the clip's end —
+            // the waveform selection is only the visual echo of them.
+            s.playback.previewStart = clip.start;
+            s.playback.previewEnd = clip.end;
             s.playback.playhead = clip.start;
             s.playback.playing = true;
          });
@@ -902,16 +1109,44 @@ export const useStudioStore = create<StudioStore>()(
 
       previewSelection: () => {
          set((s: StudioStore) => {
-            if (s.selection.selectionStart === null || s.selection.selectionEnd === null) return;
+            const { selectionStart, selectionEnd } = s.selection;
+            if (selectionStart === null || selectionEnd === null) return;
+            s.playback.mode = "source";
             s.playback.previewingClipId = "__selection__";
-            s.playback.playhead = s.selection.selectionStart;
+            s.playback.previewStart = selectionStart;
+            s.playback.previewEnd = selectionEnd;
+            s.playback.playhead = selectionStart;
+            s.playback.playing = true;
+         });
+      },
+
+      playFullSource: () => {
+         set((s: StudioStore) => {
+            s.playback.mode = "source";
+            s.playback.previewingClipId = null;
+            s.playback.previewStart = null;
+            s.playback.previewEnd = null;
+            s.playback.looping = false;
             s.playback.playing = true;
          });
       },
 
       toggleLoop: () => {
          set((s: StudioStore) => {
-            s.playback.looping = !s.playback.looping;
+            const next = !s.playback.looping;
+            s.playback.looping = next;
+            // Looping is only meaningful over a region. Turning it on with a
+            // selection present adopts that selection as the loop, so the
+            // button does what its label promises instead of quietly needing
+            // Preview to be pressed first.
+            if (next && s.playback.previewEnd === null) {
+               const { selectionStart, selectionEnd } = s.selection;
+               if (selectionStart !== null && selectionEnd !== null) {
+                  s.playback.previewingClipId = "__selection__";
+                  s.playback.previewStart = selectionStart;
+                  s.playback.previewEnd = selectionEnd;
+               }
+            }
          });
       },
 
@@ -922,6 +1157,14 @@ export const useStudioStore = create<StudioStore>()(
             set((s: StudioStore) => {
                s.playback.previewStale = true;
                s.playback.mode = "timeline"; // Switch to timeline mode for preview
+               // The timeline mix is the whole arrangement; a source-domain
+               // clip region must never be left bounding it (the playhead is
+               // in composition time now, so those bounds are meaningless).
+               s.playback.previewingClipId = null;
+               s.playback.previewStart = null;
+               s.playback.previewEnd = null;
+               s.playback.looping = false;
+               s.playback.playing = false;
             });
             const result = await studioApi.renderPreview(state.project);
             set((s: StudioStore) => {
@@ -992,22 +1235,24 @@ export const useStudioStore = create<StudioStore>()(
             // states). Getting this wrong means a second consecutive redo
             // (with no new undo in between) silently reverts to the wrong
             // state instead of being the no-op `canRedo()` implies.
-            state.future = [state.project, ...state.future].slice(0, 50);
+            state.future = [state.project, ...state.future].slice(0, HISTORY_LIMIT);
             state.project = JSON.parse(
                JSON.stringify(state.past[state.past.length - 1]),
             );
             state.past = state.past.slice(0, -1);
             state.modified = true;
+            afterHistoryJump(state);
          });
       },
 
       redo: () => {
          set((state: StudioStore) => {
             if (state.future.length === 0 || !state.project) return;
-            state.past = [...state.past, state.project];
+            state.past = [...state.past, state.project].slice(-HISTORY_LIMIT);
             state.project = JSON.parse(JSON.stringify(state.future[0]));
             state.future = state.future.slice(1);
             state.modified = true;
+            afterHistoryJump(state);
          });
       },
 

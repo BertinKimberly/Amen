@@ -25,6 +25,33 @@ export function formatTime(sec: number | null | undefined): string {
       : s;
 }
 
+/** Format seconds as a clean clock: `m:ss` (or `h:mm:ss`). No fractional part. */
+export function formatClock(sec: number | null | undefined): string {
+   if (sec == null || !isFinite(sec) || sec < 0) return "0:00";
+   const total = Math.round(sec);
+   const h = Math.floor(total / 3600);
+   const m = Math.floor((total % 3600) / 60);
+   const s = total % 60;
+   const pad = (n: number) => String(n).padStart(2, "0");
+   return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+}
+
+/**
+ * Format a duration for at-a-glance reading: tenths of a second while they
+ * still matter (under a minute), whole seconds beyond that. Used on clip
+ * bodies and summary chips, where `0:20.000` is three digits of noise.
+ */
+export function formatDuration(sec: number | null | undefined): string {
+   if (sec == null || !isFinite(sec) || sec < 0) return "0:00";
+   if (sec < 60) {
+      const ms = toMs(sec);
+      const s = Math.floor(ms / 1000);
+      const tenths = Math.floor((ms % 1000) / 100);
+      return `0:${String(s).padStart(2, "0")}.${tenths}`;
+   }
+   return formatClock(sec);
+}
+
 /** Format seconds more compactly: `1:23` or `1:23.4`. */
 export function formatTimeShort(sec: number | null | undefined): string {
    if (sec == null || !isFinite(sec) || sec < 0) return "0:00";
