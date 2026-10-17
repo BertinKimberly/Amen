@@ -1,0 +1,6 @@
+{
+  "_comment": "Copy these from Partner Center > your MSIX app > Product management > Product identity. They are public (they appear in every installed package), not secrets.",
+  "IdentityName": "REPLACE_ME (Package/Identity/Name)",
+  "Publisher": "REPLACE_ME (Package/Identity/Publisher, starts with CN=)",
+  "PublisherDisplayName": "REPLACE_ME (Package/Properties/PublisherDisplayName)"
+}

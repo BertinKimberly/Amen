@@ -156,6 +156,29 @@ The installer is written to `src-tauri/target/release/bundle/nsis/`
 (`Amen_0.1.0_x64-setup.exe`). It is a per-user NSIS installer and does not require
 admin rights.
 
+## Microsoft Store build (MSIX)
+
+The Store ships Amen as an MSIX package, which the Store signs itself, so no
+code-signing certificate is needed.
+
+1. Fill in `packaging/msix/store-identity.json` from Partner Center → the app →
+   *Product management → Product identity* (one-time).
+2. Build and pack:
+
+   ```powershell
+   .\scripts\package-msix.ps1
+   ```
+
+   This writes `src-tauri/target/msix/Amen_<version>.0_x64.msix`. Upload that file
+   under *Packages* in the Store submission.
+
+To try the packaged app locally before submitting (requires Windows Developer
+Mode), run `.\scripts\package-msix.ps1 -Dev -Register` and launch **Amen** from
+Start. Remove it afterwards with `Get-AppxPackage Amen.Dev | Remove-AppxPackage`.
+
+Each Store update needs a higher version in `tauri.conf.json` than the last
+submission.
+
 ## Production build (Linux packages)
 
 Requires **Ubuntu 24.04+ / Debian 13+** — Tauri v2 needs WebKitGTK **4.1**, and
