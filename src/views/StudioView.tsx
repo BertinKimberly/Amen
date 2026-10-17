@@ -20,12 +20,32 @@ import {
    X,
    CornerDownRight,
    AlertTriangle,
+   Loader2,
 } from "lucide-react";
 import { save, open } from "../lib/dialog";
 import { formatTime, formatClock, formatDuration } from "../lib/studioTime";
 import { computeCompositionStats } from "../lib/studioTypes";
 import { appAlert, appConfirm } from "../stores/uiDialog";
 import { UiDialogHost } from "../components/UiDialogHost";
+import { toast } from "../stores/toast";
+
+/**
+ * Readable text for anything thrown across the Tauri boundary. Rust errors
+ * arrive as plain `{code, message, detail}` objects, not `Error` instances, so
+ * `(e as Error).message` alone renders them as "undefined" or "[object Object]".
+ */
+function errorMessage(e: unknown): string {
+   if (typeof e === "string") return e;
+   if (e && typeof e === "object") {
+      const o = e as { message?: unknown; detail?: unknown };
+      const msg = typeof o.message === "string" ? o.message : null;
+      const detail = typeof o.detail === "string" ? o.detail : null;
+      if (msg && detail && detail !== msg) return `${msg} — ${detail}`;
+      if (msg) return msg;
+      if (detail) return detail;
+   }
+   return "Unexpected error";
+}
 
 const TIMELINE_FRACTION_KEY = "amen.studio.timelineFraction";
 /**
@@ -55,6 +75,17 @@ export function StudioView() {
    const store = useStudioStore();
    const [showExportDialog, setShowExportDialog] = useState(false);
    const [exporting, setExporting] = useState(false);
+   const [saving, setSaving] = useState(false);
+   const [renamingTitle, setRenamingTitle] = useState(false);
+
+   /** Commit an inline title edit. Escape cancels; blur and Enter both save. */
+   const commitTitle = useCallback(
+      (value: string) => {
+         setRenamingTitle(false);
+         store.renameProject(value);
+      },
+      [store],
+   );
    const [dragActive, setDragActive] = useState(false);
    const centerColumnRef = useRef<HTMLDivElement>(null);
    const [columnHeight, setColumnHeight] = useState(0);
@@ -193,31 +224,60 @@ export function StudioView() {
          });
          if (path && typeof path === "string") {
             await store.loadProject(path);
+            toast(
+               "Project opened",
+               `${store.project?.name ?? path.split(/[\\/]/).pop()}`,
+               "success",
+            );
          }
       } catch (e) {
-         console.error("Failed to open project:", e);
+         toast("Couldn't open that project", errorMessage(e), "destructive");
       }
    };
 
+   // Saving used to be completely silent: no confirmation on success, and a
+   // failure only reached console.error — so a save that did not happen looked
+   // exactly like one that did.
    const handleSaveProject = async () => {
-      if (store.savedPath) {
-         await store.saveProject();
-      } else {
+      if (!store.savedPath) {
          handleSaveProjectAs();
+         return;
+      }
+      try {
+         setSaving(true);
+         await store.saveProject();
+         toast(
+            "Project saved",
+            `${store.project?.name ?? "Mix"} · ${store.savedPath.split(/[\\/]/).pop()}`,
+            "success",
+         );
+      } catch (e) {
+         toast("Couldn't save the project", errorMessage(e), "destructive");
+      } finally {
+         setSaving(false);
       }
    };
 
    const handleSaveProjectAs = async () => {
+      let path: string | null = null;
       try {
-         const path = await save({
-            defaultPath: "project.lms",
+         path = await save({
+            defaultPath: `${store.project?.name || "project"}.lms`,
             filters: [{ name: "Studio Project", extensions: ["lms"] }],
          });
-         if (path) {
-            await store.saveProjectAs(path);
-         }
       } catch (e) {
-         console.error("Failed to save project:", e);
+         toast("Couldn't open the save dialog", errorMessage(e), "destructive");
+         return;
+      }
+      if (!path) return; // user cancelled — not an error, and not worth a toast
+      try {
+         setSaving(true);
+         await store.saveProjectAs(path);
+         toast("Project saved", path.split(/[\\/]/).pop(), "success");
+      } catch (e) {
+         toast("Couldn't save the project", errorMessage(e), "destructive");
+      } finally {
+         setSaving(false);
       }
    };
 
@@ -584,12 +644,37 @@ export function StudioView() {
             <div className="flex items-center gap-2.5 min-w-0">
                <img src="/logo.png" alt="" className="w-6 h-6 rounded-md shrink-0 opacity-95" />
                <div className="min-w-0">
-                  <h1 className="text-[14px] font-semibold tracking-tight text-studio-text flex items-center gap-1.5 truncate">
-                     {store.project.name}
-                     {store.modified && (
-                        <span className="text-studio-snap text-[10px]" title="Unsaved changes">●</span>
-                     )}
-                  </h1>
+                  {renamingTitle ? (
+                     <input
+                        autoFocus
+                        data-testid="studio-title-input"
+                        defaultValue={store.project.name}
+                        onFocus={(e) => e.currentTarget.select()}
+                        onBlur={(e) => commitTitle(e.currentTarget.value)}
+                        onKeyDown={(e) => {
+                           if (e.key === "Enter") {
+                              e.preventDefault();
+                              commitTitle(e.currentTarget.value);
+                           } else if (e.key === "Escape") {
+                              e.preventDefault();
+                              setRenamingTitle(false);
+                           }
+                        }}
+                        className="w-56 max-w-full bg-studio-canvas border border-studio-accent/60 rounded-md px-1.5 py-0.5 text-[14px] font-semibold tracking-tight text-studio-text outline-none"
+                     />
+                  ) : (
+                     <h1
+                        data-testid="studio-title"
+                        onDoubleClick={() => setRenamingTitle(true)}
+                        title="Double-click to rename this mix"
+                        className="text-[14px] font-semibold tracking-tight text-studio-text flex items-center gap-1.5 truncate cursor-text hover:text-studio-accent-strong transition"
+                     >
+                        {store.project.name}
+                        {store.modified && (
+                           <span className="text-studio-snap text-[10px]" title="Unsaved changes">●</span>
+                        )}
+                     </h1>
+                  )}
                   {store.savedPath && (
                      <span className="text-[10px] text-studio-text-faint font-mono truncate block max-w-xs" title={store.savedPath}>
                         {store.savedPath.split(/[\\/]/).pop()}
@@ -640,12 +725,28 @@ export function StudioView() {
                </button>
                <button
                   onClick={handleSaveProject}
+                  data-testid="studio-save"
                   className="flex items-center gap-1.5 rounded-lg bg-studio-accent px-3 py-1.5 hover:brightness-110 transition disabled:opacity-50 text-[12px] font-medium text-white shadow-sm shadow-studio-accent/30"
-                  disabled={store.loadingState === "saving"}
-                  title="Save project (Ctrl+S)"
+                  disabled={saving || store.loadingState === "saving"}
+                  title={store.savedPath ? "Save project (Ctrl+S)" : "Choose where to save (Ctrl+S)"}
                >
-                  <Save size={14} />
-                  Save
+                  {saving ? (
+                     <Loader2 size={14} className="animate-spin" />
+                  ) : (
+                     <Save size={14} />
+                  )}
+                  {saving ? "Saving…" : "Save"}
+                  {!saving && store.modified && (
+                     // Unsaved-changes marker as a dot, not a "*" in the label:
+                     // the label is this button's accessible name, and mutating
+                     // it renames the control for screen readers (and for
+                     // anything that looks a button up by name).
+                     <span
+                        aria-hidden="true"
+                        title="Unsaved changes"
+                        className="h-1.5 w-1.5 rounded-full bg-white/80"
+                     />
+                  )}
                </button>
 
                <div className="w-px h-5 bg-studio-border mx-0.5" />

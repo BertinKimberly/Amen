@@ -79,6 +79,8 @@ export interface StudioStore {
    loadProject: (path: string) => Promise<void>;
    saveProject: () => Promise<void>;
    saveProjectAs: (path: string) => Promise<void>;
+   /** Rename the mix itself (the title in the toolbar), undoable like any other edit. */
+   renameProject: (name: string) => void;
 
    // Actions: Sources
    addSource: (path: string) => Promise<void>;
@@ -439,6 +441,16 @@ export const useStudioStore = create<StudioStore>()(
          set((s: StudioStore) => {
             if (s.project) s.project.modifiedAt = Date.now();
             s.loadingState = "saving";
+            // Naming the FILE names the MIX. Choosing "Praise Vol 1.lms" in the
+            // save dialog and still seeing "Untitled Mix" in the toolbar reads
+            // as the name having been ignored — the file name is the only name
+            // the user was ever asked for.
+            const stem = path
+               .split(/[\\/]/)
+               .pop()!
+               .replace(/\.lms$/i, "")
+               .trim();
+            if (s.project && stem) s.project.name = stem;
          });
          try {
             const project = get().project;
@@ -587,6 +599,20 @@ export const useStudioStore = create<StudioStore>()(
                end,
             });
             state.selection.selectedClipId = id;
+            state.modified = true;
+         });
+      },
+
+      renameProject: (name: string) => {
+         const trimmed = name.trim();
+         set((state: StudioStore) => {
+            if (!state.project) return;
+            // An empty title would leave the toolbar blank with nothing to
+            // click on to fix it, so a cleared name reverts to the default.
+            const next = trimmed || "Untitled Mix";
+            if (state.project.name === next) return;
+            pushHistory(state);
+            state.project.name = next;
             state.modified = true;
          });
       },

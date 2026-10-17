@@ -7,8 +7,10 @@
 //! Rendering model
 //! ---------------
 //! For every timeline item (clip placement):
-//!   -ss <clip.start> -i <source>                      (fast, accurate input seek)
-//!   [N:a]atrim=end=<dur>,asetpts=PTS-STARTPTS,        (clip content)
+//!   -ss <clip.start - PREROLL> -copyts -start_at_zero -i <source>
+//!                                                     (coarse seek; the graph cuts)
+//!   [N:a]atrim=start=<clip.start>:end=<clip.end>,     (exact cut, absolute time)
+//!        asetpts=PTS-STARTPTS,                        (rebase to zero)
 //!        aresample=<sr>:ochl=stereo,volume=<gain>,    (consistent format)
 //!        afade in/out,                                (fades & crossfades)
 //!        adelay=<pos_ms>:all=1                        (place on timeline)
@@ -33,6 +35,14 @@ pub const SUPPORTED_FORMATS: &[&str] = &["mp3", "wav", "flac", "m4a"];
 /// imprecision can never shorten a clip — the filter graph's `atrim` stays the
 /// authority on the exact cut. See its use in [`build_mix_command_inner`].
 const INPUT_READ_EPSILON: f64 = 1.0;
+
+/// How far before a clip's start the demuxer is asked to seek, so the exact cut
+/// can be made by the filter graph instead of by the container.
+///
+/// Must comfortably exceed the worst container seek error (measured at ~190 ms
+/// on VBR MP3) and give a lossy decoder room to prime its overlap window. The
+/// cost is decoding this much extra audio per clip, which is negligible.
+const SEEK_PREROLL: f64 = 2.0;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -163,26 +173,46 @@ fn build_mix_command_inner(
 
             audible_end = audible_end.max(render_start + clip_dur);
 
+            // Seek to a point comfortably BEFORE the clip and let the filter
+            // graph make the real cut, at an absolute source timestamp.
+            //
+            // Seeking straight to `seek_start` let the demuxer decide the first
+            // sample, and on a compressed source it does not land where it is
+            // asked: measured against a 10-minute VBR MP3, `-ss` alone lost
+            // between 43 ms and 189 ms off the head of the clip, varying with
+            // the seek position. That is the "the start of my clip is missing"
+            // report — audible, and unpredictable enough that a preview (which
+            // seeks in the decoded stream) disagreed with the render.
+            //
+            // `-copyts` keeps the decoded frames' true source timestamps so
+            // `atrim` can cut at an exact absolute time no matter where the
+            // container seek actually landed; `-start_at_zero` normalises
+            // containers whose first timestamp is not zero, so these bounds
+            // always mean "seconds from the start of the file", which is what a
+            // clip's start/end mean. Verified sample-exact (0.02 ms) on a
+            // lossless source.
+            let coarse_seek = (seek_start - SEEK_PREROLL).max(0.0);
+            let seek_end = seek_start + clip_dur;
             args.push("-ss".to_string());
-            args.push(format!("{}", seek_start));
+            args.push(format!("{coarse_seek}"));
             // Per-input read bound, as defense in depth rather than for speed:
-            // measured against a 12-minute WAV it is a wash (~100ms either
-            // way), because the graph's `atrim` already EOFs the input and
-            // ffmpeg stops pulling. Its value is that the source can no longer
-            // leak past its clip even if a downstream filter is ever added that
-            // does not propagate EOF promptly. The epsilon keeps the
-            // filter-graph `atrim` the sole authority on the exact cut: an
-            // approximate container seek (MP3/AAC land on a frame boundary, not
-            // a sample) could otherwise make the demuxer, not the arrangement,
-            // decide a clip's length and silently shorten it.
+            // the graph's `atrim` already EOFs the input and ffmpeg stops
+            // pulling. Its value is that the source cannot leak past its clip
+            // even if a downstream filter is ever added that does not propagate
+            // EOF promptly. It must cover the pre-roll as well as the clip.
             args.push("-t".to_string());
-            args.push(format!("{:.6}", clip_dur + INPUT_READ_EPSILON));
+            args.push(format!(
+                "{:.6}",
+                (seek_start - coarse_seek) + clip_dur + INPUT_READ_EPSILON
+            ));
+            args.push("-copyts".to_string());
+            args.push("-start_at_zero".to_string());
             args.push("-i".to_string());
             args.push(src.path.clone());
 
             let mut chain = String::new();
             chain.push_str(&format!(
-                "[{input_idx}:a]atrim=end={clip_dur:.6},asetpts=PTS-STARTPTS"
+                "[{input_idx}:a]atrim=start={seek_start:.6}:end={seek_end:.6},asetpts=PTS-STARTPTS"
             ));
             chain.push_str(&format!(",aresample={sr}:ochl=stereo"));
             chain.push_str(&format!(",volume={volume}"));
@@ -280,6 +310,14 @@ fn build_mix_command_inner(
     // trim (mirrored by `-t` on the output, below) makes the timeline the
     // single source of truth for the exported duration.
     if duration > 0.0 {
+        // Rebuild timestamps from the sample count FIRST. `adelay` places a
+        // clip by shifting its timestamps, so an arrangement that starts with
+        // silence hands this trim a stream whose first sample sits at the
+        // offset rather than at zero — and `atrim=end` then measures from the
+        // wrong origin and cuts the leading silence off, shortening the mix by
+        // exactly the offset. Regenerating PTS from N/SR makes the delay part
+        // of the sample timeline, so the trim measures true composition time.
+        tail_steps.push("asetpts=N/SR/TB".to_string());
         tail_steps.push(format!("atrim=end={duration:.6}"));
     }
 
@@ -703,16 +741,28 @@ mod tests {
         // Each source's seek and read bound must stay attached to the input
         // they belong to — asserted as one contiguous run so a seek drifting
         // onto the wrong `-i` still fails here. Clip A is 42.3→78.7 (36.4s),
-        // clip B is 10→40 (30s); each input is read for its clip's length plus
-        // the seek-imprecision epsilon.
+        // clip B is 10→40 (30s). The seek lands PREROLL early and the read
+        // bound covers the pre-roll as well as the clip.
         assert!(
-            joined.contains(&format!("-ss 42.3 -t {:.6} -i C:\\Music\\A.mp3", 36.4 + INPUT_READ_EPSILON)),
+            joined.contains(&format!(
+                "-ss {} -t {:.6} -copyts -start_at_zero -i C:\\Music\\A.mp3",
+                42.3 - SEEK_PREROLL,
+                SEEK_PREROLL + 36.4 + INPUT_READ_EPSILON
+            )),
             "{joined}"
         );
         assert!(
-            joined.contains(&format!("-ss 10 -t {:.6} -i C:\\Music\\B.mp3", 30.0 + INPUT_READ_EPSILON)),
+            joined.contains(&format!(
+                "-ss {} -t {:.6} -copyts -start_at_zero -i C:\\Music\\B.mp3",
+                10.0 - SEEK_PREROLL,
+                SEEK_PREROLL + 30.0 + INPUT_READ_EPSILON
+            )),
             "{joined}"
         );
+        // The exact cut is the graph's, at absolute source time — never the
+        // demuxer's. Losing this is what silently ate the head of every clip.
+        assert!(mix.filter_complex.contains("atrim=start=42.300000:end=78.700000"), "{}", mix.filter_complex);
+        assert!(mix.filter_complex.contains("atrim=start=10.000000:end=40.000000"), "{}", mix.filter_complex);
     }
 
     #[test]
@@ -913,8 +963,16 @@ mod tests {
             fade_in: 0.0, fade_out: 0.0, crossfade_prev: 0.0, trim_start: 4.0, trim_end: 6.0,
         });
         let mix = build_mix_command_inner(&p, NormalizeKind::None, None, false).unwrap();
-        assert!(mix.args.join(" ").contains("-ss 14"), "seek must include trimStart: {:?}", mix.args);
-        assert!(mix.filter_complex.contains("atrim=end=20.000000"), "{}", mix.filter_complex);
+        // trimStart shifts the clip's effective start to 14s; the coarse seek
+        // sits PREROLL before it and the graph cuts at 14 → 34 exactly.
+        assert!(
+            mix.args.join(" ").contains(&format!("-ss {}", 14.0 - SEEK_PREROLL)),
+            "seek must include trimStart: {:?}", mix.args
+        );
+        assert!(
+            mix.filter_complex.contains("atrim=start=14.000000:end=34.000000"),
+            "trimmed clip must cut at the trimmed start: {}", mix.filter_complex
+        );
         assert!((mix.duration - 20.0).abs() < 1e-9);
     }
 
@@ -968,10 +1026,20 @@ mod tests {
         let mix = build_mix_command_inner(&p, NormalizeKind::None, None, false).unwrap();
         // -ss and -t are INPUT options: both must precede the -i they bound.
         let joined = mix.args.join(" ");
-        let expected = format!("-ss 100 -t {:.6} -i", 20.0 + INPUT_READ_EPSILON);
+        let expected = format!(
+            "-ss {} -t {:.6} -copyts -start_at_zero -i",
+            100.0 - SEEK_PREROLL,
+            SEEK_PREROLL + 20.0 + INPUT_READ_EPSILON
+        );
         assert!(joined.contains(&expected), "expected `{expected}` in {joined}");
+        // A 20s clip from a 1-hour source must still read only ~23s of it: the
+        // pre-roll buys precision, it must not reintroduce whole-file decoding.
+        assert!(
+            SEEK_PREROLL + 20.0 + INPUT_READ_EPSILON < 30.0,
+            "pre-roll must stay small relative to the clip"
+        );
         // The read bound stays looser than the graph's cut, so an imprecise
         // container seek can never shorten the clip.
-        assert!(mix.filter_complex.contains("atrim=end=20.000000"), "{}", mix.filter_complex);
+        assert!(mix.filter_complex.contains("atrim=start=100.000000:end=120.000000"), "{}", mix.filter_complex);
     }
 }

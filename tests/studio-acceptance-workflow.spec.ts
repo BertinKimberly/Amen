@@ -94,17 +94,40 @@ test("acceptance: import 3 sources, clip each, arrange, trim, preview, play mix,
    await page.waitForTimeout(100);
 
    // ---- Play the full timeline mix (real ffmpeg render) ---------------------
+   const srcBeforeMix = await page.locator("audio").getAttribute("src");
    const mixBtn = page.getByRole("button", { name: /Timeline Mix/i });
    await mixBtn.click();
-   await page.waitForTimeout(4000);
-   const audioSrc = await page.locator("audio").getAttribute("src");
-   expect(audioSrc, "Timeline Mix must render before playing").toBeTruthy();
+   // Wait for the render to actually land rather than guessing at a duration:
+   // this is a real ffmpeg pass over several clips, and a fixed timeout passes
+   // on an idle machine but expires under full-suite load — which reads as
+   // "the mix won't play" when nothing is wrong with playback at all.
+   await expect
+      .poll(
+         async () =>
+            page.locator("audio").evaluate((el: HTMLAudioElement) => ({
+               src: el.getAttribute("src"),
+               ready: el.readyState,
+            })).then((s) => s.src !== srcBeforeMix && !!s.src && s.ready >= 2),
+         { timeout: 45_000, message: "Timeline Mix must finish rendering before playing" },
+      )
+      .toBe(true);
 
    const playBtn = page.locator('button[title="Stop (resets to 0)"]').locator("..").locator("button").nth(1);
    await playBtn.click();
-   await page.waitForTimeout(700);
-   const playing = await page.locator("audio").evaluate((el: HTMLAudioElement) => !el.paused && el.currentTime > 0);
-   expect(playing, "the composed mix must actually play").toBe(true);
+   // Poll rather than sleep: starting playback of a just-written file means the
+   // element still has to buffer and decode, which takes longer on a loaded
+   // machine than any fixed wait can safely assume. The assertion is unchanged
+   // — playback must genuinely start and the clock must advance — it simply is
+   // no longer racing a 700ms timer.
+   await expect
+      .poll(
+         async () =>
+            page
+               .locator("audio")
+               .evaluate((el: HTMLAudioElement) => !el.paused && el.currentTime > 0),
+         { timeout: 15_000, message: "the composed mix must actually play" },
+      )
+      .toBe(true);
    await page.screenshot({ path: "test-results/acceptance-02-mix-playing.png" });
    await playBtn.click();
 

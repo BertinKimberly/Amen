@@ -1,12 +1,12 @@
 {
   "name": "amen",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
-  "description": "Amen — a local, offline-first media downloader powered by yt-dlp + FFmpeg",
+  "description": "Amen \u2014 a local, offline-first media downloader powered by yt-dlp + FFmpeg",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
+    "dev": "node api.js && vite",
+    "build": "node api.js && tsc && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

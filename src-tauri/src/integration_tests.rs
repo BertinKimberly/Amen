@@ -431,3 +431,174 @@ fn studio_export_clip_and_missing_source() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A clip must render from EXACTLY the sample it starts at.
+///
+/// Regression test for silent head-truncation: the renderer used to seek the
+/// demuxer straight to `clip.start`, and on a compressed source that lands on a
+/// frame boundary rather than a sample. Measured against a VBR MP3 it threw
+/// away between 43 ms and 189 ms off the front of every clip, varying with the
+/// seek position — enough to lose the attack of a note, and invisible in the
+/// preview, which seeks in the decoded stream instead.
+///
+/// The source here is silence with a short marker tone at a known, deliberately
+/// frame-misaligned offset. The clip begins exactly on the tone, so a correct
+/// render puts the tone's first sample at the very start of the output. Any
+/// leading silence is content that was lost.
+#[test]
+#[ignore]
+fn studio_clip_starts_on_the_exact_sample() {
+    use crate::audio::model::*;
+    use crate::audio::render::{render_mix, ExportQuality};
+
+    let Some((_ytdlp, ffmpeg, _ffprobe)) = resolve_tools() else {
+        eprintln!("SKIPPED: media tools not found.");
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("lms_seek_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    // 90s VBR MP3: silence, with a 250ms tone at an offset that is NOT a
+    // multiple of an MP3 frame (1152 samples ≈ 26.12ms).
+    const MARK: f64 = 40.017;
+    let src = dir.join("marker.mp3");
+    let (code, log) = run_and_capture(
+        &ffmpeg,
+        &[
+            "-y", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo:d=90",
+            "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=44100:duration=0.25",
+            "-filter_complex",
+            &format!(
+                "[1:a]adelay={}:all=1,pan=stereo|c0=c0|c1=c0[t];[0:a][t]amix=inputs=2:normalize=0[o]",
+                (MARK * 1000.0).round() as i64
+            ),
+            "-map", "[o]", "-c:a", "libmp3lame", "-q:a", "4",
+            &src.to_string_lossy(),
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>(),
+        90,
+    );
+    assert_eq!(code, Some(0), "fixture generation failed: {log}");
+
+    let mut p = StudioProject::new("Seek".to_string());
+    p.sources.push(StudioSource {
+        id: "s1".to_string(), path: src.to_string_lossy().to_string(), name: "marker".to_string(),
+        duration: 90.0, sample_rate: Some(44100), channels: Some(2), bpm: None, markers: vec![],
+    });
+    p.clips.push(StudioClip {
+        id: "c1".to_string(), source_id: "s1".to_string(), name: "M".to_string(),
+        start: MARK, end: MARK + 2.0,
+    });
+    p.timeline.tracks[0].items.push(StudioTimelineItem {
+        clip_id: "c1".to_string(), position: 0.0, volume: 1.0, muted: false,
+        fade_in: 0.0, fade_out: 0.0, crossfade_prev: 0.0, trim_start: 0.0, trim_end: 0.0,
+    });
+
+    let out = dir.join("cut.wav");
+    let q = ExportQuality { format: "wav".to_string(), bitrate_kbps: 320 };
+    render_mix(&p, &out, &q).expect("render");
+
+    // Decode to raw mono f32 and find the first audible sample.
+    let raw = dir.join("cut.f32");
+    let (code, log) = run_and_capture(
+        &ffmpeg,
+        ["-y", "-i", &out.to_string_lossy(), "-ac", "1", "-ar", "44100", "-f", "f32le",
+         &raw.to_string_lossy()]
+            .iter().map(|s| s.to_string()).collect::<Vec<_>>().as_slice(),
+        60,
+    );
+    assert_eq!(code, Some(0), "decode failed: {log}");
+
+    let bytes = std::fs::read(&raw).unwrap();
+    let first = (0..bytes.len() / 4)
+        .find(|i| {
+            f32::from_le_bytes([bytes[i * 4], bytes[i * 4 + 1], bytes[i * 4 + 2], bytes[i * 4 + 3]])
+                .abs()
+                > 0.02
+        })
+        .map(|i| i as f64 / 44100.0);
+
+    let lead = first.expect("the marker tone must be present in the rendered clip");
+    // Allowance covers only the source MP3's own encoder delay (~25ms), which
+    // is a property of the fixture, not of the cut. The bug produced 43-189ms.
+    assert!(
+        lead < 0.030,
+        "clip lost {:.1} ms off its head (tone found at {:.4}s, expected ~0)",
+        lead * 1000.0,
+        lead
+    );
+    println!("OK: clip head intact — marker at {:.1} ms", lead * 1000.0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An arrangement that starts with silence must export at its full length.
+///
+/// Regression test: `adelay` places a clip by shifting timestamps, so when the
+/// first clip does not sit at 0:00 the graph's closing `atrim=end=<duration>`
+/// saw a stream whose first sample was already at the offset and measured from
+/// the wrong origin — cutting the leading silence off and shortening the mix by
+/// exactly the offset. The clip itself sounded right, so this showed up only as
+/// an export that was seconds shorter than the timeline said.
+#[test]
+#[ignore]
+fn studio_leading_silence_survives_export() {
+    use crate::audio::model::*;
+    use crate::audio::render::{render_mix, ExportQuality};
+
+    let Some((_ytdlp, ffmpeg, ffprobe)) = resolve_tools() else {
+        eprintln!("SKIPPED: media tools not found.");
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("lms_lead_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("tone.mp3");
+    let (code, log) = run_and_capture(
+        &ffmpeg,
+        ["-y", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100:duration=120",
+         "-ac", "2", "-c:a", "libmp3lame", "-q:a", "4", &src.to_string_lossy()]
+            .iter().map(|s| s.to_string()).collect::<Vec<_>>().as_slice(),
+        90,
+    );
+    assert_eq!(code, Some(0), "fixture generation failed: {log}");
+
+    // One 20s clip taken from deep in the source, placed 5s into the timeline:
+    // the composition is 25s, of which the first 5s are silence.
+    const LEAD: f64 = 5.0;
+    const LEN: f64 = 20.0;
+    let mut p = StudioProject::new("Lead".to_string());
+    p.sources.push(StudioSource {
+        id: "s1".to_string(), path: src.to_string_lossy().to_string(), name: "tone".to_string(),
+        duration: 120.0, sample_rate: Some(44100), channels: Some(2), bpm: None, markers: vec![],
+    });
+    p.clips.push(StudioClip {
+        id: "c1".to_string(), source_id: "s1".to_string(), name: "C".to_string(),
+        start: 40.0, end: 40.0 + LEN,
+    });
+    p.timeline.tracks[0].items.push(StudioTimelineItem {
+        clip_id: "c1".to_string(), position: LEAD, volume: 1.0, muted: false,
+        fade_in: 0.0, fade_out: 0.0, crossfade_prev: 0.0, trim_start: 0.0, trim_end: 0.0,
+    });
+    assert!((p.duration() - (LEAD + LEN)).abs() < 1e-6, "project duration should include the lead");
+
+    let out = dir.join("lead.wav");
+    let q = ExportQuality { format: "wav".to_string(), bitrate_kbps: 320 };
+    render_mix(&p, &out, &q).expect("render");
+
+    let (code, probed) = run_and_capture(
+        &ffprobe,
+        ["-v", "quiet", "-show_entries", "format=duration", "-of", "csv=p=0",
+         &out.to_string_lossy()].iter().map(|s| s.to_string()).collect::<Vec<_>>().as_slice(),
+        30,
+    );
+    assert_eq!(code, Some(0), "ffprobe failed: {probed}");
+    let actual: f64 = probed.lines().next().unwrap_or("0").trim().parse().unwrap_or(0.0);
+    assert!(
+        (actual - (LEAD + LEN)).abs() < 0.3,
+        "exported {actual:.3}s but the arrangement is {:.3}s — the {LEAD}s of leading silence was dropped",
+        LEAD + LEN
+    );
+    println!("OK: leading silence intact — exported {actual:.3}s");
+    let _ = std::fs::remove_dir_all(&dir);
+}

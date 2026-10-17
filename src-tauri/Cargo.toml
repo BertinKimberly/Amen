@@ -1,6 +1,6 @@
 [package]
 name = "amen"
-version = "0.2.0"
+version = "0.3.0"
 description = "Amen — local media downloader powered by yt-dlp + FFmpeg"
 authors = ["Amen"]
 edition = "2021"
